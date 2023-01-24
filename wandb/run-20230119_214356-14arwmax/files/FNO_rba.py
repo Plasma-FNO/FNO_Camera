@@ -1,1 +1,0 @@
-/rds/project/iris_vol2/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/FNO_rba.py
