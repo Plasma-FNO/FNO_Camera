@@ -1,5 +1,6 @@
 #simvue files
 simvue.ini
+wandb/
 
 #Saved Models
 Models/
