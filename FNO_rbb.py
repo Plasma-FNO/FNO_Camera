@@ -16,7 +16,7 @@ configuration = {"Case": 'RBB Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
                  "Epochs": 500,
-                 "Batch Size": 50,
+                 "Batch Size": 2,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
@@ -25,8 +25,8 @@ configuration = {"Case": 'RBB Camera',
                  "Normalisation Strategy": 'Min-Max',
                  "T_in": 20, 
                  "T_out": 50,
-                 "Step": 10,
-                 "Modes":16,
+                 "Step": 1,
+                 "Modes":8,
                  "Width": 16,
                  "Variables": 1,
                  "Resolution":1, 
@@ -356,8 +356,8 @@ class FNO2d(nn.Module):
         self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        # self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        # self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         
         # self.mlp0 = MLP(self.width, self.width, self.width)
         # self.mlp1 = MLP(self.width, self.width, self.width)
@@ -370,8 +370,8 @@ class FNO2d(nn.Module):
         self.w1 = nn.Conv2d(self.width, self.width, 1)
         self.w2 = nn.Conv2d(self.width, self.width, 1)
         self.w3 = nn.Conv2d(self.width, self.width, 1)
-        self.w4 = nn.Conv2d(self.width, self.width, 1)
-        self.w5 = nn.Conv2d(self.width, self.width, 1)
+        # self.w4 = nn.Conv2d(self.width, self.width, 1)
+        # self.w5 = nn.Conv2d(self.width, self.width, 1)
 
         # self.norm = nn.InstanceNorm2d(self.width)
         self.norm = nn.Identity()
@@ -409,15 +409,15 @@ class FNO2d(nn.Module):
         x2 = self.w3(x)
         x = x1+x2
 
-        x1 = self.norm(self.conv4(self.norm(x)))
-        # x1 = self.mlp4(x1)
-        x2 = self.w4(x)
-        x = x1+x2
+        # x1 = self.norm(self.conv4(self.norm(x)))
+        # # x1 = self.mlp4(x1)
+        # x2 = self.w4(x)
+        # x = x1+x2
 
-        x1 = self.norm(self.conv5(self.norm(x)))
-        # x1 = self.mlp5(x1)
-        x2 = self.w5(x)
-        x = x1+x2
+        # x1 = self.norm(self.conv5(self.norm(x)))
+        # # x1 = self.mlp5(x1)
+        # x2 = self.w5(x)
+        # x = x1+x2
 
         x = x.permute(0, 2, 3, 1)
         x = self.fc1(x)

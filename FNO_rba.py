@@ -567,12 +567,12 @@ test_u_norm = y_normalizer.encode(test_u)
 #Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
 x_grid = np.linspace(-1.0, -2.0, 400)[::res]
 # x = np.linspace(-1.0, -2.0, 608)[::res]
-gridx = torch.tensor(x, dtype=torch.float)
+gridx = torch.tensor(x_grid, dtype=torch.float)
 gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
 
 y_grid = np.linspace(0.0, 1.0, 512)[::res]
 # y = np.linspace(-1.0, 0.0, 768)[::res]
-gridy = torch.tensor(y, dtype=torch.float)
+gridy = torch.tensor(y_grid, dtype=torch.float)
 gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
 
 #Using the calibrated R and Z positions averaged over the time and shots. 
@@ -679,7 +679,7 @@ torch.save(model.state_dict(),  model_loc)
 # %%
 #Testing 
 #Sequential
-
+batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
 pred_set = torch.zeros(test_u.shape)
@@ -707,37 +707,68 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
-idx = np.random.randint(0, ntest) 
-idx = 6 
 
-u_field = test_u[idx].cpu().detach().numpy()
+idx = np.random.randint(0,ntest) 
+idx = 53
+
+u_field = test_u[idx]
+
+v_min_1 = torch.min(u_field[:,:,0])
+v_max_1 = torch.max(u_field[:,:,0])
+
+v_min_2 = torch.min(u_field[:, :, int(step/2)])
+v_max_2 = torch.max(u_field[:, :, int(step/2)])
+
+v_min_3 = torch.min(u_field[:, :, -1])
+v_max_3 = torch.max(u_field[:, :, -1])
 
 fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
-ax.imshow(u_field[:,:,0], cmap=cm.coolwarm)
-ax.title.set_text('Initial')
-ax.set_ylabel('Camera')
+pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+# ax.title.set_text('Initial')
+ax.title.set_text('t='+ str(T_in))
+ax.set_ylabel('Solution')
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,2)
-ax.imshow(u_field[:,:,int(T_out/2)], cmap=cm.coolwarm)
-ax.title.set_text('Middle')
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+# ax.title.set_text('Middle')
+ax.title.set_text('t='+ str(int((T+T_in)/2)))
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,3)
-ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm)
-ax.title.set_text('Final')
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+# ax.title.set_text('Final')
+ax.title.set_text('t='+str(T+T_in))
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
 
 
-u_field = pred_set[idx].cpu().detach().numpy()
+u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
-ax.imshow(u_field[:,:,0], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 ax.set_ylabel('FNO')
 
+fig.colorbar(pcm, pad=0.05)
+
 ax = fig.add_subplot(2,3,5)
-ax.imshow(u_field[:,:,int(T_out/2)], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,6)
-ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
 
 output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
 plt.savefig(output_plot)
