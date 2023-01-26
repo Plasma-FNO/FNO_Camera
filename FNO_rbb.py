@@ -15,21 +15,21 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 configuration = {"Case": 'RBB Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 500,
-                 "Batch Size": 2,
+                 "Epochs": 5,
+                 "Batch Size": 100,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'ReLU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 20, 
+                 "T_in": 10, 
                  "T_out": 50,
-                 "Step": 1,
-                 "Modes":8,
+                 "Step": 10,
+                 "Modes":16,
                  "Width": 16,
                  "Variables": 1,
-                 "Resolution":1, 
+                 "Resolution":2, 
                  "Noise":0.0}
 
 
@@ -356,8 +356,8 @@ class FNO2d(nn.Module):
         self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         
         # self.mlp0 = MLP(self.width, self.width, self.width)
         # self.mlp1 = MLP(self.width, self.width, self.width)
@@ -370,8 +370,8 @@ class FNO2d(nn.Module):
         self.w1 = nn.Conv2d(self.width, self.width, 1)
         self.w2 = nn.Conv2d(self.width, self.width, 1)
         self.w3 = nn.Conv2d(self.width, self.width, 1)
-        # self.w4 = nn.Conv2d(self.width, self.width, 1)
-        # self.w5 = nn.Conv2d(self.width, self.width, 1)
+        self.w4 = nn.Conv2d(self.width, self.width, 1)
+        self.w5 = nn.Conv2d(self.width, self.width, 1)
 
         # self.norm = nn.InstanceNorm2d(self.width)
         self.norm = nn.Identity()
@@ -409,15 +409,15 @@ class FNO2d(nn.Module):
         x2 = self.w3(x)
         x = x1+x2
 
-        # x1 = self.norm(self.conv4(self.norm(x)))
-        # # x1 = self.mlp4(x1)
-        # x2 = self.w4(x)
-        # x = x1+x2
+        x1 = self.norm(self.conv4(self.norm(x)))
+        # x1 = self.mlp4(x1)
+        x2 = self.w4(x)
+        x = x1+x2
 
-        # x1 = self.norm(self.conv5(self.norm(x)))
-        # # x1 = self.mlp5(x1)
-        # x2 = self.w5(x)
-        # x = x1+x2
+        x1 = self.norm(self.conv5(self.norm(x)))
+        # x1 = self.mlp5(x1)
+        x2 = self.w5(x)
+        x = x1+x2
 
         x = x.permute(0, 2, 3, 1)
         x = self.fc1(x)
@@ -527,7 +527,6 @@ t_sets = T_in + T_out - input_size - output_size
 
 u1 = []
 u2 = []
-
 for ii in tqdm(range(len(u))):
     for jj in range(t_sets):
         u1.append(u[ii, :, :, jj:jj+input_size])
@@ -627,7 +626,6 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['
 
 myloss = nn.MSELoss()
     
-
 # %%
 epochs = configuration['Epochs']
 if torch.cuda.is_available():
@@ -689,7 +687,7 @@ torch.save(model.state_dict(),  model_loc)
 
 #Testing 
 #Sequential
-
+batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
 pred_set = torch.zeros(test_u.shape)
@@ -717,37 +715,68 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
-idx = np.random.randint(0, ntest) 
-idx = 6 
 
-u_field = test_u[idx].cpu().detach().numpy()
+idx = np.random.randint(0,ntest) 
+idx = 6
+
+u_field = test_u[idx]
+
+v_min_1 = torch.min(u_field[:,:,0])
+v_max_1 = torch.max(u_field[:,:,0])
+
+v_min_2 = torch.min(u_field[:, :, int(step/2)])
+v_max_2 = torch.max(u_field[:, :, int(step/2)])
+
+v_min_3 = torch.min(u_field[:, :, -1])
+v_max_3 = torch.max(u_field[:, :, -1])
 
 fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
-ax.imshow(u_field[:,:,0], cmap=cm.coolwarm)
-ax.title.set_text('Initial')
-ax.set_ylabel('Camera')
+pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+# ax.title.set_text('Initial')
+ax.title.set_text('t='+ str(T_in))
+ax.set_ylabel('Solution')
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,2)
-ax.imshow(u_field[:,:,int(T_out/2)], cmap=cm.coolwarm)
-ax.title.set_text('Middle')
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+# ax.title.set_text('Middle')
+ax.title.set_text('t='+ str(int((T+T_in)/2)))
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,3)
-ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm)
-ax.title.set_text('Final')
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+# ax.title.set_text('Final')
+ax.title.set_text('t='+str(T+T_in))
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
 
 
-u_field = pred_set[idx].cpu().detach().numpy()
+u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
-ax.imshow(u_field[:,:,0], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 ax.set_ylabel('FNO')
 
+fig.colorbar(pcm, pad=0.05)
+
 ax = fig.add_subplot(2,3,5)
-ax.imshow(u_field[:,:,int(T_out/2)], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
+
 
 ax = fig.add_subplot(2,3,6)
-ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+ax.axes.xaxis.set_ticks([])
+ax.axes.yaxis.set_ticks([])
+fig.colorbar(pcm, pad=0.05)
 
 output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
 plt.savefig(output_plot)

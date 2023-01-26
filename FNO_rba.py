@@ -519,7 +519,7 @@ t_sets = T_in + T_out - input_size - output_size
 
 u1 = []
 u2 = []
-for ii in range(len(u)):
+for ii in tqdm(range(len(u))):
     for jj in range(t_sets):
         u1.append(u[ii, :, :, jj:jj+input_size])
         u2.append(u[ii, :, :, jj+input_size:jj+input_size+step])
@@ -538,6 +538,7 @@ width = configuration['Width']
 
 batch_size = configuration['Batch Size']
 batch_size2 = batch_size
+batch_size_test = ntest 
 
 
 t1 = default_timer()
@@ -584,8 +585,8 @@ gridy = gridy.reshape(1, S_x, S_y, 1)
 # train_a = torch.cat((train_a, gridx.repeat([ntrain,1,1,1]), gridy.repeat([ntrain,1,1,1])), dim=-1)
 # test_a = torch.cat((test_a, gridx.repeat([ntest,1,1,1]), gridy.repeat([ntest,1,1,1])), dim=-1)
 
-gridx = gridx.to(device)
-gridy = gridy.to(device)
+# gridx = gridx.to(device)
+# gridy = gridy.to(device)
 
 train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_norm), batch_size=batch_size_test, shuffle=False)
@@ -613,12 +614,8 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['
 
 
 
-if configuration['Pipeline'] == 'Sequential':
-    myloss = nn.MSELoss()
+myloss = nn.MSELoss()
     
-gridx = gridx.to(device)
-gridy = gridy.to(device)
-
 # %%
 epochs = configuration['Epochs']
 if torch.cuda.is_available():
