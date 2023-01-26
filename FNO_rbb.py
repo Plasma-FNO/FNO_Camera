@@ -15,7 +15,7 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 configuration = {"Case": 'RBB Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 5,
+                 "Epochs": 500,
                  "Batch Size": 100,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
@@ -23,13 +23,13 @@ configuration = {"Case": 'RBB Camera',
                  "Scheduler Gamma": 0.5,
                  "Activation": 'ReLU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 10, 
+                 "T_in": 20, 
                  "T_out": 50,
                  "Step": 10,
                  "Modes":16,
                  "Width": 16,
                  "Variables": 1,
-                 "Resolution":2, 
+                 "Resolution":1, 
                  "Noise":0.0}
 
 
@@ -479,7 +479,7 @@ elif configuration['Case'] == 'RBB Camera - Moved':
 res = configuration['Resolution']
 gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res]
+u_sol = data.astype(np.float32)[:,:,::res, ::res][:,:,:,60:540] #Cropped to show the centre
 np.random.shuffle(u_sol)
 
 # %%
@@ -580,7 +580,8 @@ x_grid = np.linspace(-1.5, 1.5, 448)[::res]
 gridx = torch.tensor(x_grid, dtype=torch.float)
 gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
 
-y_grid = np.linspace(-2.0, 2.0, 640)[::res]
+# y_grid = np.linspace(-2.0, 2.0, 640)[::res]
+y_grid = np.linspace(-2.0, 2.0, 480)[::res] #Cropped to just the centre 
 # y = np.linspace(0, 1*(640/448), 640)[::res]
 gridy = torch.tensor(y_grid, dtype=torch.float)
 gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
@@ -778,7 +779,7 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/rbb_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
