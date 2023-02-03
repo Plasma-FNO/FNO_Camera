@@ -219,47 +219,7 @@ class LpLoss(object):
 
     def __call__(self, x, y):
         return self.rel(x, y)
-
-# A simple feedforward neural network
-class DenseNet(torch.nn.Module):
-    def __init__(self, layers, nonlinearity, out_nonlinearity=None, normalize=False):
-        super(DenseNet, self).__init__()
-
-        self.n_layers = len(layers) - 1
-
-        assert self.n_layers >= 1
-
-        self.layers = nn.ModuleList()
-
-        for j in range(self.n_layers):
-            self.layers.append(nn.Linear(layers[j], layers[j+1]))
-
-            if j != self.n_layers - 1:
-                if normalize:
-                    self.layers.append(nn.BatchNorm1d(layers[j+1]))
-
-                self.layers.append(nonlinearity())
-
-        if out_nonlinearity is not None:
-            self.layers.append(out_nonlinearity())
-
-    def forward(self, x):
-        for _, l in enumerate(self.layers):
-            x = l(x)
-
-        return x
-
 # %%
-
-
-#Complex multiplication
-def compl_mul2d(a, b):
-    op = partial(torch.einsum, "bctq,dctq->bdtq")
-    return torch.stack([
-        op(a[..., 0], b[..., 0]) - op(a[..., 1], b[..., 1]),
-        op(a[..., 1], b[..., 0]) + op(a[..., 0], b[..., 1])
-    ], dim=-1)
-
 
 #Adding Gaussian Noise to the training dataset
 class AddGaussianNoise(object):
@@ -409,14 +369,12 @@ class FRNN(nn.Module):
 
         y = self.linear_out_x(x)
         h = self.linear_out_h(h)
+        print(y.shape, h.shape)
         return y, h.clone().detach()
 
 #Using x and y values from the simulation discretisation 
    def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-        print(batchsize)
-        print(size_x)
-        print(size_y)
         gridx = torch.tensor(x_grid, dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
         gridy = torch.tensor(y_grid, dtype=torch.float)
@@ -621,11 +579,11 @@ for ep in tqdm(range(epochs)):
         yy = yy.to(device)
         hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
         
-        print(xx.shape)
         loss = 0 
         for tt in range(t_sets):
-            hidden, out = model(xx[:,tt], hidden)        
-            loss += myloss(out, yy)
+            out, hidden = model(xx[:,tt], hidden)       
+            print(out.shape, yy[:,tt].shape) 
+            loss += myloss(out, yy[:, tt])
 
 
         optimizer.zero_grad()
@@ -642,7 +600,7 @@ for ep in tqdm(range(epochs)):
 
             for tt in range(t_sets):
                 hidden, out = model(xx[:,tt], hidden)        
-                loss += myloss(out, yy)
+                loss += myloss(out, yy[:,tt])
             test_l2 += loss.item()
 
 
@@ -683,7 +641,7 @@ with torch.no_grad():
         for tt in range(t_sets):
             hidden, pred = model(xx[tt], hidden)     
             pred_set[index, tt]=pred   
-            loss += myloss(pred, yy)
+            loss += myloss(pred, yy[:,tt])
         test_l2 += loss.item()
 
     
