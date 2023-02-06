@@ -342,7 +342,7 @@ class FRNN(nn.Module):
         self.linear_in_x = nn.Linear(T_in+2, self.width)
         self.linear_in_h = nn.Linear(self.n_hidden, self.width)
         self.linear_out_x = nn.Linear(self.width, self.n_output)
-        self.linear_out_h = nn.Linear(self.width , self.n_hidden)
+        self.linear_out_h = nn.Linear(self.width , self.n_hidden-2)
 
         self.FRNN_Cells = nn.ModuleList()
         
@@ -355,17 +355,21 @@ class FRNN(nn.Module):
         x = torch.cat((x, grid), dim=-1)
         h = torch.cat((h, grid), dim=-1)
 
+        print(h.shape, x.shape)
+
         h = self.linear_in_h(h)
         x = self.linear_in_x(x)
 
-        h = h.permute(0, 3, 2, 1)
-        x = x.permute(0, 3, 2, 1)
+        h = h.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 1, 2)
+        print(h.shape, x.shape)
 
         for cell in self.FRNN_Cells:
             x, h = cell(x, h)   
 
         h = h.permute(0, 2, 3, 1)
         x = x.permute(0, 2, 3, 1)
+        print(h.shape, x.shape)
 
         y = self.linear_out_x(x)
         h = self.linear_out_h(h)
@@ -582,7 +586,6 @@ for ep in tqdm(range(epochs)):
         loss = 0 
         for tt in range(t_sets):
             out, hidden = model(xx[:,tt], hidden)       
-            print(out.shape, yy[:,tt].shape) 
             loss += myloss(out, yy[:, tt])
 
 
@@ -599,7 +602,7 @@ for ep in tqdm(range(epochs)):
             hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
 
             for tt in range(t_sets):
-                hidden, out = model(xx[:,tt], hidden)        
+                out, hidden = model(xx[:,tt], hidden)        
                 loss += myloss(out, yy[:,tt])
             test_l2 += loss.item()
 
@@ -639,7 +642,7 @@ with torch.no_grad():
         hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
 
         for tt in range(t_sets):
-            hidden, pred = model(xx[tt], hidden)     
+            pred, hidden = model(xx[tt], hidden)     
             pred_set[index, tt]=pred   
             loss += myloss(pred, yy[:,tt])
         test_l2 += loss.item()

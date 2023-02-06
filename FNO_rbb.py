@@ -25,11 +25,11 @@ configuration = {"Case": 'RBB Camera',
                  "Normalisation Strategy": 'Min-Max',
                  "T_in": 10, 
                  "T_out": 90,
-                 "Step": 10,
-                 "Modes":16,
+                 "Step": 30,
+                 "Modes":8,
                  "Width": 16,
                  "Variables": 1,
-                 "Resolution":1, 
+                 "Resolution":2, 
                  "Noise":0.0}
 
 
@@ -356,8 +356,8 @@ class FNO2d(nn.Module):
         self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         
         # self.mlp0 = MLP(self.width, self.width, self.width)
         # self.mlp1 = MLP(self.width, self.width, self.width)
@@ -370,8 +370,8 @@ class FNO2d(nn.Module):
         self.w1 = nn.Conv2d(self.width, self.width, 1)
         self.w2 = nn.Conv2d(self.width, self.width, 1)
         self.w3 = nn.Conv2d(self.width, self.width, 1)
-        # self.w4 = nn.Conv2d(self.width, self.width, 1)
-        # self.w5 = nn.Conv2d(self.width, self.width, 1)
+        self.w4 = nn.Conv2d(self.width, self.width, 1)
+        self.w5 = nn.Conv2d(self.width, self.width, 1)
 
         # self.norm = nn.InstanceNorm2d(self.width)
         self.norm = nn.Identity()
@@ -479,7 +479,7 @@ elif configuration['Case'] == 'RBB Camera - Moved':
 res = configuration['Resolution']
 gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res][:,:,:,60:540] #Cropped to show the centre
+u_sol = data.astype(np.float32)[:,:,::res, ::res]#[:,:,:,60:540] #Cropped to show the centre
 np.random.shuffle(u_sol)
 
 # %%
@@ -580,8 +580,8 @@ x_grid = np.linspace(-1.5, 1.5, 448)[::res]
 gridx = torch.tensor(x_grid, dtype=torch.float)
 gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
 
-# y_grid = np.linspace(-2.0, 2.0, 640)[::res]
-y_grid = np.linspace(-2.0, 2.0, 480)[::res] #Cropped to just the centre 
+y_grid = np.linspace(-2.0, 2.0, 640)[::res]
+# y_grid = np.linspace(-2.0, 2.0, 480)[::res] #Cropped to just the centre 
 # y = np.linspace(0, 1*(640/448), 640)[::res]
 gridy = torch.tensor(y_grid, dtype=torch.float)
 gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
