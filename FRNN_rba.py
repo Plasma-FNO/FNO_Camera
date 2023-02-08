@@ -17,11 +17,11 @@ configuration = {"Case": 'RBA Camera',
                  "Type": 'Elman RNN',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 1,
-                 "Batch Size": 4,
+                 "Epochs": 500,
+                 "Batch Size": 5,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
-                 "Scheduler Step": 50,
+                 "Scheduler Step": 100,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
@@ -30,8 +30,8 @@ configuration = {"Case": 'RBA Camera',
                  "Step": 10,
                  "Modes":8,
                  "Width": 16,
-                 "Hidden Size":32,
-                 "Cells": 1,
+                 "Hidden Size":16,
+                 "Cells": 3,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
@@ -355,25 +355,21 @@ class FRNN(nn.Module):
         x = torch.cat((x, grid), dim=-1)
         h = torch.cat((h, grid), dim=-1)
 
-        print(h.shape, x.shape)
 
         h = self.linear_in_h(h)
         x = self.linear_in_x(x)
 
         h = h.permute(0, 3, 1, 2)
         x = x.permute(0, 3, 1, 2)
-        print(h.shape, x.shape)
 
         for cell in self.FRNN_Cells:
             x, h = cell(x, h)   
 
         h = h.permute(0, 2, 3, 1)
         x = x.permute(0, 2, 3, 1)
-        print(h.shape, x.shape)
 
         y = self.linear_out_x(x)
         h = self.linear_out_h(h)
-        print(y.shape, h.shape)
         return y, h.clone().detach()
 
 #Using x and y values from the simulation discretisation 
@@ -581,7 +577,7 @@ for ep in tqdm(range(epochs)):
 
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
+        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
         
         loss = 0 
         for tt in range(t_sets):
@@ -599,7 +595,7 @@ for ep in tqdm(range(epochs)):
             loss = 0
             xx = xx.to(device)
             yy = yy.to(device)
-            hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
+            hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
 
             for tt in range(t_sets):
                 out, hidden = model(xx[:,tt], hidden)        
@@ -621,7 +617,7 @@ train_time = time.time() - start_time
 
 # %%
 
-model_loc = file_loc + '/Models/FNO_rba_' + run.name + '.pth'
+model_loc = file_loc + '/Models/FRNN_rba_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
@@ -639,10 +635,10 @@ with torch.no_grad():
         loss = 0
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = (torch.ones(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)*xx[:,0,:,:,0:1])
+        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
 
         for tt in range(t_sets):
-            pred, hidden = model(xx[tt], hidden)     
+            pred, hidden = model(xx[:, tt], hidden)     
             pred_set[index, tt]=pred   
             loss += myloss(pred, yy[:,tt])
         test_l2 += loss.item()
@@ -662,41 +658,41 @@ pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
 # %%
 
 idx = np.random.randint(0,ntest) 
-idx = 53
+idx = 5
 
 u_field = test_u[idx]
 
-v_min_1 = torch.min(u_field[:,:,0])
-v_max_1 = torch.max(u_field[:,:,0])
+v_min_1 = torch.min(u_field[0, :,:,-1])
+v_max_1 = torch.max(u_field[0, :,:,-1])
 
-v_min_2 = torch.min(u_field[:, :, int(step/2)])
-v_max_2 = torch.max(u_field[:, :, int(step/2)])
+v_min_2 = torch.min(u_field[int(t_sets/2), :, :, -1])
+v_max_2 = torch.max(u_field[int(t_sets/2), :, :, -1])
 
-v_min_3 = torch.min(u_field[:, :, -1])
-v_max_3 = torch.max(u_field[:, :, -1])
+v_min_3 = torch.min(u_field[-1, :, :, -1])
+v_max_3 = torch.max(u_field[-1, :, :, -1])
 
 fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
-pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+pcm =ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 # ax.title.set_text('Initial')
-ax.title.set_text('t='+ str(T_in))
+ax.title.set_text('t='+ str(T_in+step))
 ax.set_ylabel('Solution')
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,2)
-pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 # ax.title.set_text('Middle')
-ax.title.set_text('t='+ str(int((T+T_in)/2)))
+ax.title.set_text('t='+ str(int((T_in+t_sets/2 +step))))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,3)
-pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 # ax.title.set_text('Final')
-ax.title.set_text('t='+str(T+T_in))
+ax.title.set_text('t='+str(T_in + step + t_sets))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
@@ -705,30 +701,30 @@ fig.colorbar(pcm, pad=0.05)
 u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
-pcm = ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
-ax.set_ylabel('FNO')
+pcm = ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+ax.set_ylabel('FRNN')
 
 fig.colorbar(pcm, pad=0.05)
 
 ax = fig.add_subplot(2,3,5)
-pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,6)
-pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/FRNN_rba_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
 
-CODE = ['FNO_rba.py']
+CODE = ['FRNN_rba.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
