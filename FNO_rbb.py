@@ -36,7 +36,7 @@ configuration = {"Case": 'RBB Camera',
 # %% 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-agnostic'], metadata=configuration)
 
 
 # %%
