@@ -38,7 +38,7 @@ configuration = {"Case": 'RBA Camera',
 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rba', 'Forecasting'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rba', 'Forecasting', 'shot-aware'], metadata=configuration)
 
 
 
@@ -173,6 +173,41 @@ class RangeNormalizer(object):
     def cpu(self):
         self.a = self.a.cpu()
         self.b = self.b.cpu()
+
+
+#normalization, rangewise but single value. 
+class MinMax_Normalizer(object):
+    def __init__(self, x, low=-1.0, high=1.0):
+        super(MinMax_Normalizer, self).__init__()
+        mymin = torch.min(x)
+        mymax = torch.max(x)
+
+        self.a = (high - low)/(mymax - mymin)
+        self.b = -self.a*mymax + high
+
+    def encode(self, x):
+        s = x.size()
+        x = x.reshape(s[0], -1)
+        x = self.a*x + self.b
+        x = x.view(s)
+        return x
+
+    def decode(self, x):
+        s = x.size()
+        x = x.reshape(s[0], -1)
+        x = (x - self.b)/self.a
+        x = x.view(s)
+        return x
+
+    def cuda(self):
+        self.a = self.a.cuda()
+        self.b = self.b.cuda()
+
+    def cpu(self):
+        self.a = self.a.cpu()
+        self.b = self.b.cpu()
+
+
 
 #loss function with rel/abs Lp loss
 class LpLoss(object):
@@ -497,12 +532,14 @@ print(test_u.shape)
 
 # %%
 # a_normalizer = UnitGaussianNormalizer(train_a)
-a_normalizer = RangeNormalizer(train_a)
+a_normalizer = MinMax_Normalizer(train_a)
+# a_normalizer = RangeNormalizer(train_a)
 train_a = a_normalizer.encode(train_a)
 test_a = a_normalizer.encode(test_a)
 
 # y_normalizer = UnitGaussianNormalizer(train_u)
-y_normalizer = RangeNormalizer(train_u)
+y_normalizer = MinMax_Normalizer(train_u)
+# y_normalizer = RangeNormalizer(train_u)
 train_u = y_normalizer.encode(train_u)
 test_u_norm = y_normalizer.encode(test_u)
 

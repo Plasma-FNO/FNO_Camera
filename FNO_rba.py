@@ -15,7 +15,7 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 configuration = {"Case": 'RBA Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 500,
+                 "Epochs": 5,
                  "Batch Size": 100,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
@@ -23,15 +23,14 @@ configuration = {"Case": 'RBA Camera',
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Range',
-                 "T_in": 20, 
-                 "T_out": 80,
-                 "Step": 30,
+                 "T_in": 10, 
+                 "T_out": 10,
+                 "Step": 1,
                  "Modes":8,
                  "Width": 16,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
-
 
 # %% 
 from simvue import Run
@@ -56,23 +55,28 @@ from functools import partial
 
 import time 
 from timeit import default_timer
+from tqdm import tqdm 
 
 torch.manual_seed(0)
 np.random.seed(0)
 
+# %% 
+#Setting up the directories - data location, model location and plots. 
 import os 
 path = file_loc = os.getcwd()
 data_loc = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
 model_loc = os.getcwd()
 
 
-
-#################################################
-#
-# Utilities
-#
-#################################################
+# %%
+#Setting up CUDA
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+# %%
+##################################
+#Normalisation Functions 
+##################################
 
 
 # normalization, pointwise gaussian
@@ -113,7 +117,7 @@ class UnitGaussianNormalizer(object):
         self.mean = self.mean.cpu()
         self.std = self.std.cpu()
 
-# normalization, Gaussian
+# normalization, Gaussian - across the entire dataset
 class GaussianNormalizer(object):
     def __init__(self, x, eps=0.00001):
         super(GaussianNormalizer, self).__init__()
@@ -139,12 +143,45 @@ class GaussianNormalizer(object):
         self.std = self.std.cpu()
 
 
-# normalization, scaling by range
+# normalization, scaling by range - pointwise
 class RangeNormalizer(object):
-    def __init__(self, x, low=0.0, high=1.0):
+    def __init__(self, x, low=-1.0, high=1.0):
         super(RangeNormalizer, self).__init__()
         mymin = torch.min(x, 0)[0].view(-1)
         mymax = torch.max(x, 0)[0].view(-1)
+
+        self.a = (high - low)/(mymax - mymin)
+        self.b = -self.a*mymax + high
+
+    def encode(self, x):
+        s = x.size()
+        x = x.reshape(s[0], -1)
+        x = self.a*x + self.b
+        x = x.view(s)
+        return x
+
+    def decode(self, x):
+        s = x.size()
+        x = x.reshape(s[0], -1)
+        x = (x - self.b)/self.a
+        x = x.view(s)
+        return x
+
+
+    def cuda(self):
+        self.a = self.a.cuda()
+        self.b = self.b.cuda()
+
+    def cpu(self):
+        self.a = self.a.cpu()
+        self.b = self.b.cpu()
+
+#normalization, rangewise but across the full domain 
+class MinMax_Normalizer(object):
+    def __init__(self, x, low=-1.0, high=1.0):
+        super(MinMax_Normalizer, self).__init__()
+        mymin = torch.min(x)
+        mymax = torch.max(x)
 
         self.a = (high - low)/(mymax - mymin)
         self.b = -self.a*mymax + high
@@ -170,6 +207,12 @@ class RangeNormalizer(object):
     def cpu(self):
         self.a = self.a.cpu()
         self.b = self.b.cpu()
+
+
+# %%
+##################################
+# Loss Functions
+##################################
 
 #loss function with rel/abs Lp loss
 class LpLoss(object):
@@ -217,71 +260,10 @@ class LpLoss(object):
     def __call__(self, x, y):
         return self.rel(x, y)
 
-# A simple feedforward neural network
-class DenseNet(torch.nn.Module):
-    def __init__(self, layers, nonlinearity, out_nonlinearity=None, normalize=False):
-        super(DenseNet, self).__init__()
 
-        self.n_layers = len(layers) - 1
-
-        assert self.n_layers >= 1
-
-        self.layers = nn.ModuleList()
-
-        for j in range(self.n_layers):
-            self.layers.append(nn.Linear(layers[j], layers[j+1]))
-
-            if j != self.n_layers - 1:
-                if normalize:
-                    self.layers.append(nn.BatchNorm1d(layers[j+1]))
-
-                self.layers.append(nonlinearity())
-
-        if out_nonlinearity is not None:
-            self.layers.append(out_nonlinearity())
-
-    def forward(self, x):
-        for _, l in enumerate(self.layers):
-            x = l(x)
-
-        return x
 
 # %%
 
-
-#Complex multiplication
-def compl_mul2d(a, b):
-    op = partial(torch.einsum, "bctq,dctq->bdtq")
-    return torch.stack([
-        op(a[..., 0], b[..., 0]) - op(a[..., 1], b[..., 1]),
-        op(a[..., 1], b[..., 0]) + op(a[..., 0], b[..., 1])
-    ], dim=-1)
-
-
-#Adding Gaussian Noise to the training dataset
-class AddGaussianNoise(object):
-    def __init__(self, mean=0., std=1.):
-        self.mean = torch.FloatTensor([mean])
-        self.std = torch.FloatTensor([std])
-        
-    def __call__(self, tensor):
-        return tensor + torch.randn(tensor.size()).cuda() * self.std + self.mean
-    
-    def __repr__(self):
-        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
-
-    def cuda(self):
-        self.mean = self.mean.cuda()
-        self.std = self.std.cuda()
-
-    def cpu(self):
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-
-# additive_noise = AddGaussianNoise(0.0, configuration['Noise'])
-# additive_noise.cuda()
-
-# %%
 
 ################################################################
 # fourier layer
@@ -449,10 +431,7 @@ class FNO2d(nn.Module):
 
         return c
 
-
-
 # %%
-
 
 ################################################################
 # Loading Data 
@@ -463,11 +442,11 @@ class FNO2d(nn.Module):
 data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
 data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
 # data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
-data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
+# data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
 res = configuration['Resolution']
-gridx = data_calib['r_pos'][::res, ::res]
-gridy = data_calib['z_pos'][::res, ::res]
+# gridx = data_calib['r_pos'][::res, ::res]
+# gridy = data_calib['z_pos'][::res, ::res]
 u_sol = data.astype(np.float32)[:,:,::res, ::res]
 
 u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
@@ -484,13 +463,15 @@ u = torch.from_numpy(u_sol)
 u = u.permute(0, 2, 3, 1)
 
 
-ntrain = 75
-ntest = 11
+ntrain = 10
+ntest = 2
 batch_size_test = ntest 
 
 
 S_x = grid_size_x #Grid Size
 S_y = grid_size_y #Grid Size
+
+#Extracting hyperparameters from the config dict
 
 modes = configuration['Modes']
 width = configuration['Width']
@@ -508,6 +489,12 @@ T = configuration['T_out']
 T_out = T
 step = output_size = configuration['Step']
 
+modes = configuration['Modes']
+width = configuration['Width']
+
+batch_size = configuration['Batch Size']
+batch_size2 = batch_size
+batch_size_test = ntest 
 # %%
 
 ################################################################
@@ -532,13 +519,6 @@ u2 = torch.stack(u2)
 
 ntrain = int(ntrain*t_sets)
 ntest = len(u1) - ntrain
-
-modes = configuration['Modes']
-width = configuration['Width']
-
-batch_size = configuration['Batch Size']
-batch_size2 = batch_size
-batch_size_test = ntest 
 
 
 t1 = default_timer()
@@ -582,11 +562,7 @@ gridy = torch.tensor(gridy, dtype=torch.float)
 gridx = gridx.reshape(1, S_x, S_y, 1)
 gridy = gridy.reshape(1, S_x, S_y, 1)
 
-# train_a = torch.cat((train_a, gridx.repeat([ntrain,1,1,1]), gridy.repeat([ntrain,1,1,1])), dim=-1)
-# test_a = torch.cat((test_a, gridx.repeat([ntest,1,1,1]), gridy.repeat([ntest,1,1,1])), dim=-1)
 
-# gridx = gridx.to(device)
-# gridy = gridy.to(device)
 
 train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_norm), batch_size=batch_size_test, shuffle=False)
@@ -609,10 +585,9 @@ model.to(device)
 
 # wandb.watch(model, log='all')
 
+#Setting up the optimisation schedule. 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
-
 
 myloss = nn.MSELoss()
     
@@ -622,6 +597,7 @@ if torch.cuda.is_available():
     y_normalizer.cuda()
 
 # %%
+#Training Loop
 #Sequential 
 
 start_time = time.time()
@@ -668,14 +644,13 @@ for ep in tqdm(range(epochs)):
 train_time = time.time() - start_time 
 
 # %%
-
+#Saving the Model
 model_loc = file_loc + '/Models/FNO_rba_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
 # %%
-#Testing 
-#Sequential
+#Testing - Sequential
 batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
@@ -696,6 +671,7 @@ test_l2 = (pred_set - test_u_norm).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
 
 
+#Logging Metrics 
 
 run.update_metadata({'Training Time': float(train_time),
                      'MSE Test Error': float(test_l2)
@@ -704,6 +680,7 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
+#Plotting the comparison plots
 
 idx = np.random.randint(0,ntest) 
 idx = 53
@@ -771,6 +748,7 @@ output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
+#Simvue Artifact storage
 
 CODE = ['FNO_rba.py']
 INPUTS = []

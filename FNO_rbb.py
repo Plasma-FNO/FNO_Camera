@@ -23,13 +23,13 @@ configuration = {"Case": 'RBB Camera',
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Range',
-                 "T_in": 20, 
+                 "T_in": 10, 
                  "T_out": 80,
-                 "Step": 30,
+                 "Step": 20,
                  "Modes":8,
                  "Width": 16,
                  "Variables": 1,
-                 "Resolution":2, 
+                 "Resolution":1, 
                  "Noise":0.0}
 
 
