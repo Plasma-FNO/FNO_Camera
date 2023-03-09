@@ -15,7 +15,7 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 configuration = {"Case": 'RBA Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 5,
+                 "Epochs": 500,
                  "Batch Size": 100,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
@@ -24,8 +24,8 @@ configuration = {"Case": 'RBA Camera',
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Range',
                  "T_in": 10, 
-                 "T_out": 10,
-                 "Step": 1,
+                 "T_out": 60,
+                 "Step": 20,
                  "Modes":8,
                  "Width": 16,
                  "Variables": 1,
@@ -463,8 +463,8 @@ u = torch.from_numpy(u_sol)
 u = u.permute(0, 2, 3, 1)
 
 
-ntrain = 10
-ntest = 2
+ntrain = 75
+ntest = 11
 batch_size_test = ntest 
 
 

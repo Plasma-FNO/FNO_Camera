@@ -251,46 +251,6 @@ class LpLoss(object):
     def __call__(self, x, y):
         return self.rel(x, y)
 
-# A simple feedforward neural network
-class DenseNet(torch.nn.Module):
-    def __init__(self, layers, nonlinearity, out_nonlinearity=None, normalize=False):
-        super(DenseNet, self).__init__()
-
-        self.n_layers = len(layers) - 1
-
-        assert self.n_layers >= 1
-
-        self.layers = nn.ModuleList()
-
-        for j in range(self.n_layers):
-            self.layers.append(nn.Linear(layers[j], layers[j+1]))
-
-            if j != self.n_layers - 1:
-                if normalize:
-                    self.layers.append(nn.BatchNorm1d(layers[j+1]))
-
-                self.layers.append(nonlinearity())
-
-        if out_nonlinearity is not None:
-            self.layers.append(out_nonlinearity())
-
-    def forward(self, x):
-        for _, l in enumerate(self.layers):
-            x = l(x)
-
-        return x
-
-# %%
-
-
-#Complex multiplication
-def compl_mul2d(a, b):
-    op = partial(torch.einsum, "bctq,dctq->bdtq")
-    return torch.stack([
-        op(a[..., 0], b[..., 0]) - op(a[..., 1], b[..., 1]),
-        op(a[..., 1], b[..., 0]) + op(a[..., 0], b[..., 1])
-    ], dim=-1)
-
 
 #Adding Gaussian Noise to the training dataset
 class AddGaussianNoise(object):
@@ -495,7 +455,7 @@ class FNO2d(nn.Module):
 # %%
 
 data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
+# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
 # data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
 data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
@@ -504,8 +464,9 @@ gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
 u_sol = data.astype(np.float32)[:,:,::res, ::res]
 
-u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
-u_sol = np.vstack((u_sol, u_2_sol))[:10]
+# u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
+# u_sol = np.vstack((u_sol, u_2_sol))
+u_sol = u_sol[:30]
 
 np.random.shuffle(u_sol)
 
@@ -520,6 +481,10 @@ u = u.permute(0, 2, 3, 1)
 
 ntrain = 75
 ntest = 11
+
+ntrain = 25
+ntest = 5
+
 batch_size_test = ntest 
 
 
@@ -578,15 +543,27 @@ print(train_u.shape)
 print(test_u.shape)
 
 # %%
-# a_normalizer = UnitGaussianNormalizer(train_a)
-a_normalizer = MinMax_Normalizer(train_a)
-# a_normalizer = RangeNormalizer(train_a)
+#Normalising the train and test datasets with the preferred normalisation. 
+
+norm_strategy = configuration['Normalisation Strategy']
+
+if norm_strategy == 'Min-Max':
+    a_normalizer = MinMax_Normalizer(train_a)
+    y_normalizer = MinMax_Normalizer(train_u)
+
+if norm_strategy == 'Range':
+    a_normalizer = RangeNormalizer(train_a)
+    y_normalizer = RangeNormalizer(train_u)
+
+if norm_strategy == 'Min-Max':
+    a_normalizer = GaussianNormalizer(train_a)
+    y_normalizer = GaussianNormalizer(train_u)
+
+
+
 train_a = a_normalizer.encode(train_a)
 test_a = a_normalizer.encode(test_a)
 
-# y_normalizer = UnitGaussianNormalizer(train_u)
-y_normalizer = MinMax_Normalizer(train_u)
-# y_normalizer = RangeNormalizer(train_u)
 train_u = y_normalizer.encode(train_u)
 test_u_norm = y_normalizer.encode(test_u)
 
@@ -595,25 +572,11 @@ test_u_norm = y_normalizer.encode(test_u)
 #Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
 x_grid = np.linspace(-1.0, -2.0, 400)[::res]
 # x = np.linspace(-1.0, -2.0, 608)[::res]
-gridx = torch.tensor(x_grid, dtype=torch.float)
-gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
 
 y_grid = np.linspace(0.0, 1.0, 512)[::res]
 # y = np.linspace(-1.0, 0.0, 768)[::res]
-gridy = torch.tensor(y_grid, dtype=torch.float)
-gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
 
-#Using the calibrated R and Z positions averaged over the time and shots. 
-gridx = torch.tensor(gridx, dtype=torch.float)
-gridy = torch.tensor(gridy, dtype=torch.float)
-gridx = gridx.reshape(1, S_x, S_y, 1)
-gridy = gridy.reshape(1, S_x, S_y, 1)
 
-# train_a = torch.cat((train_a, gridx.repeat([ntrain,1,1,1]), gridy.repeat([ntrain,1,1,1])), dim=-1)
-# test_a = torch.cat((test_a, gridx.repeat([ntest,1,1,1]), gridy.repeat([ntest,1,1,1])), dim=-1)
-
-# gridx = gridx.to(device)
-# gridy = gridy.to(device)
 
 train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_norm), batch_size=batch_size_test, shuffle=False)
@@ -664,11 +627,14 @@ for ep in tqdm(range(epochs)):
         
         loss = 0 
         for tt in range(t_sets):
-            out = model(xx[:,tt])  
-            loss += myloss(out, yy[:, tt])
+            x = xx[:,tt]
+            y = yy[:,tt]
+            out = model(x)  
+            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
 
         loss.backward()
         optimizer.step()
+        train_l2 += loss        
 
     with torch.no_grad():
         for xx, yy in test_loader:
@@ -677,8 +643,10 @@ for ep in tqdm(range(epochs)):
             yy = yy.to(device)
 
             for tt in range(t_sets):
-                out = model(xx[:,tt])       
-                loss += myloss(out, yy[:,tt])
+                x = xx[:,tt]
+                y = yy[:,tt]
+                out = model(x)  
+                loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
             test_l2 += loss.item()
 
 
@@ -716,9 +684,11 @@ with torch.no_grad():
         yy = yy.to(device)
 
         for tt in range(t_sets):
-            pred= model(xx[:, tt])     
+            x = xx[:,tt]
+            y = yy[:,tt]
+            pred = model(x)     
             pred_set[index, tt]=pred   
-            loss += myloss(pred, yy[:,tt])
+            loss += myloss(pred.reshape(batch_size, -1), y.reshape(batch_size, -1))
         test_l2 += loss.item()
     
 test_l2 = (pred_set - test_u_norm).pow(2).mean()
@@ -734,7 +704,7 @@ pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
 idx = np.random.randint(0,ntest) 
-idx = 5
+idx = 0
 
 u_field = test_u[idx]
 
@@ -795,7 +765,7 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/FRNN_rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/FNO_rba_' + run.name + '.png'
 plt.savefig(output_plot)
 # %% 
 
