@@ -6,15 +6,13 @@ Created on Thu July 13 2022
 
 @author: vgopakum
 
-FRNN on RBA Camera Data. Data Pipeline is reconstructed to be fed
-in a shot-aware sequential manner in line with a Recurrent model
-
+FNO 2d time on RBA Camera Data. Data Pipeline is reconstructed to be fed
+in a shot-agnostic sequential manner in line with a Recurrent model
 
 """
 
 # %%
-configuration = {"Case": 'RBA Camera',
-                 "Type": 'Elman RNN',
+configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
                  "Epochs": 500,
@@ -25,21 +23,20 @@ configuration = {"Case": 'RBA Camera',
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 20, 
-                 "T_out": 50,
+                 "T_in": 10, 
+                 "T_out": 60,
                  "Step": 10,
                  "Modes":8,
-                 "Width": 16,
-                 "Hidden Size":16,
-                 "Cells": 1,
+                 "Width": 32,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
 
+
+# %% 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rba', 'Forecasting', 'shot-aware', 'linear hidden'], metadata=configuration)
-
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-aware'], metadata=configuration)
 
 
 # %%
@@ -208,7 +205,6 @@ class MinMax_Normalizer(object):
         self.b = self.b.cpu()
 
 
-
 #loss function with rel/abs Lp loss
 class LpLoss(object):
     def __init__(self, d=2, p=2, size_average=True, reduction=True):
@@ -254,7 +250,7 @@ class LpLoss(object):
 
     def __call__(self, x, y):
         return self.rel(x, y)
-# %%
+
 
 #Adding Gaussian Noise to the training dataset
 class AddGaussianNoise(object):
@@ -324,91 +320,106 @@ class SpectralConv2d(nn.Module):
         x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
         return x
 
-class FRNN_Cell(nn.Module):
-   def __init__(self, modes, width, batch_first=True):
-        super(FRNN_Cell, self).__init__()
+# %%
+
+class FNO2d(nn.Module):
+    def __init__(self, modes1, modes2, width):
+        super(FNO2d, self).__init__()
+
+        """
+        The overall network. It contains 4 layers of the Fourier layer.
+        1. Lift the input to the desire channel dimension by self.fc0 .
+        2. 4 layers of the integral operators u' = (W + K)(u).
+            W defined by self.w; K defined by self.conv .
+        3. Project from the channel space to the output space by self.fc1 and self.fc2 .
         
-        self.modes = modes
+        input: the solution of the previous T_in timesteps + 2 locations (u(t-T_in, x, y), ..., u(t-1, x, y),  x, y)
+        input shape: (batchsize, x=x_discretistion, y=y_discretisation, c=T_in)
+        output: the solution of the next timestep
+        output shape: (batchsize, x=x_discretisation, y=y_discretisatiob, c=step)
+        """
+
+        self.modes1 = modes1
+        self.modes2 = modes2
         self.width = width
-        
-        self.F_x = SpectralConv2d(self.width, self.width, self.modes, self.modes)
-        # self.F_h = SpectralConv2d(self.width, self.width, self.modes, self.modes)
+        self.fc0 = nn.Linear(T_in+2, self.width)
+        # input channel is 12: the solution of the previous T_in timesteps + 2 locations (u(t-10, x, y), ..., u(t-1, x, y),  x, y)
 
-        self.W_x = nn.Conv2d(self.width, self.width, 1)
-        self.W_h = nn.Conv2d(self.width, self.width, 1)
+        self.conv0 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        # self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        # self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        # self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        
+        # self.mlp0 = MLP(self.width, self.width, self.width)
+        # self.mlp1 = MLP(self.width, self.width, self.width)
+        # self.mlp2 = MLP(self.width, self.width, self.width)
+        # self.mlp3 = MLP(self.width, self.width, self.width)
+        # self.mlp4 = MLP(self.width, self.width, self.width)
+        # self.mlp5 = MLP(self.width, self.width, self.width)
 
-        
-   def forward(self, x, h):
-        batchsize = x.shape[0]
-        size_x, size_y = x.shape[1], x.shape[2]
+        self.w0 = nn.Conv2d(self.width, self.width, 1)
+        self.w1 = nn.Conv2d(self.width, self.width, 1)
+        self.w2 = nn.Conv2d(self.width, self.width, 1)
+        # self.w3 = nn.Conv2d(self.width, self.width, 1)
+        # self.w4 = nn.Conv2d(self.width, self.width, 1)
+        # self.w5 = nn.Conv2d(self.width, self.width, 1)
 
-        # h1 = self.F_h(h)
-        h2 = self.W_h(h)
-        h = h2
-        h = F.gelu(h)
-        
-        x1 = self.F_x(x)
-        x2 = self.W_x(x)
-        x = x1 + x2
-        x = F.gelu(x)
-        
-        h = h+x
-        y = torch.tanh(h)
-        
-        return y, h.clone().detach()
-    
-   def count_params(self):
-        c = 0
-        for p in self.parameters():
-            c += reduce(operator.mul, list(p.size()))
-    
-        return c
+        # self.norm = nn.InstanceNorm2d(self.width)
+        self.norm = nn.Identity()
 
+        self.fc1 = nn.Linear(self.width, 128)
+        self.fc2 = nn.Linear(128, step)
 
-class FRNN(nn.Module):
-   def __init__(self, modes, width, n_output, n_hidden, n_cells, T_in, batch_first=True):
-        super(FRNN, self).__init__()
-        
-        self.modes = modes
-        self.width = width
-        self.n_output = n_output 
-        self.n_hidden = n_hidden
-        
-        self.linear_in_x = nn.Linear(T_in+2, self.width)
-        self.linear_in_h = nn.Linear(self.n_hidden, self.width)
-        self.linear_out_x = nn.Linear(self.width, self.n_output)
-        self.linear_out_h = nn.Linear(self.width , self.n_hidden-2)
-
-        self.FRNN_Cells = nn.ModuleList()
-        
-        for ii in range(n_cells):
-            self.FRNN_Cells.append(FRNN_Cell(self.modes, self.width))
-
-        
-   def forward(self, x, h):
+    def forward(self, x):
         grid = self.get_grid(x.shape, x.device)
         x = torch.cat((x, grid), dim=-1)
-        h = torch.cat((h, grid), dim=-1)
 
-
-        h = self.linear_in_h(h)
-        x = self.linear_in_x(x)
-
-        h = h.permute(0, 3, 1, 2)
+        x = self.fc0(x)
         x = x.permute(0, 3, 1, 2)
 
-        for cell in self.FRNN_Cells:
-            x, h = cell(x, h)   
+        x1 = self.norm(self.conv0(self.norm(x)))
+        # x1 = self.mlp0(x1)
+        x2 = self.w0(x)
+        x = x1+x2
+        x = F.gelu(x)
 
-        h = h.permute(0, 2, 3, 1)
+        x1 = self.norm(self.conv1(self.norm(x)))
+        # x1 = self.mlp1(x1)    
+        x2 = self.w1(x)
+        x = x1+x2
+        x = F.gelu(x)
+
+        x1 = self.norm(self.conv2(self.norm(x)))
+        # x1 = self.mlp2(x1)
+        x2 = self.w2(x)
+        x = x1+x2
+        x = F.gelu(x)
+
+        # x1 = self.norm(self.conv3(self.norm(x)))
+        # # x1 = self.mlp3(x1)
+        # x2 = self.w3(x)
+        # x = x1+x2
+
+        # x1 = self.norm(self.conv4(self.norm(x)))
+        # # x1 = self.mlp4(x1)
+        # x2 = self.w4(x)
+        # x = x1+x2
+
+        # x1 = self.norm(self.conv5(self.norm(x)))
+        # # x1 = self.mlp5(x1)
+        # x2 = self.w5(x)
+        # x = x1+x2
+
         x = x.permute(0, 2, 3, 1)
-
-        y = self.linear_out_x(x)
-        h = self.linear_out_h(h)
-        return y, h.clone().detach()
+        x = self.fc1(x)
+        x = F.gelu(x)
+        x = self.fc2(x)
+        return x
 
 #Using x and y values from the simulation discretisation 
-   def get_grid(self, shape, device):
+    def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
         gridx = torch.tensor(x_grid, dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
@@ -422,16 +433,18 @@ class FRNN(nn.Module):
     #     gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
     #     gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
     #     gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
-    #     gridy = gridy.reshape(1, 1, size_y, 1).repeat([batch
-  
+    #     gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+    #     return torch.cat((gridx, gridy), dim=-1).to(device)
 
-   def count_params(self):
+    def count_params(self):
         c = 0
         for p in self.parameters():
             c += reduce(operator.mul, list(p.size()))
-    
+
         return c
-        
+
+
+
 # %%
 
 
@@ -441,21 +454,33 @@ class FRNN(nn.Module):
 
 # %%
 
-data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
-# data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
-data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
+#  30055 - 30430 : Initial RBB Camera Data
+#  29920 - 29970 : moved RBB Camera Data
 
+if configuration['Case'] == 'RBB Camera':
+
+    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_30055_30430.npy')
+    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_30055_30430.npz')
+
+elif configuration['Case'] == 'RBB Camera - Moved':
+
+    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_29920_29970.npy')
+    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_29920_29970.npz')
+
+
+
+# %%
 res = configuration['Resolution']
 gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res]
-
-# u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
-# u_sol = np.vstack((u_sol, u_2_sol))
-u_sol = u_sol[:30]
-
+u_sol = data.astype(np.float32)[:,:,::res, ::res]#[:,:,:,60:540] #Cropped to show the centre
 np.random.shuffle(u_sol)
+
+grid_size_x = u_sol.shape[2]
+grid_size_y = u_sol.shape[3]
+S_x = grid_size_x #Grid Size
+S_y = grid_size_y #Grid Size
+
 
 # %%
 
@@ -481,8 +506,6 @@ S_y = grid_size_y #Grid Size
 modes = configuration['Modes']
 width = configuration['Width']
 output_size = configuration['Step']
-hidden_size = configuration['Hidden Size']
-num_cells = configuration['Cells']
 
 batch_size = configuration['Batch Size']
 batch_size2 = batch_size
@@ -511,11 +534,7 @@ for ii in tqdm(range(len(u))):
     for jj in range(t_sets):
         u1[ii, jj] = u[ii, :, :, jj:jj+input_size]
         u2[ii, jj] = u[ii, :, :, jj+input_size:jj+input_size+step]
-    
-# u1 = np.asarray(u1)
-# u2 = np.asarray(u2)
-
-
+        
 modes = configuration['Modes']
 width = configuration['Width']
 
@@ -583,7 +602,7 @@ print('preprocessing finished, time used:', t2-t1)
 # training and evaluation
 ################################################################
 
-model = FRNN(modes, width, output_size, hidden_size, num_cells, T_in).to(device)
+model = FNO2d(modes, modes, width)
 run.update_metadata({'Number of Params': int(model.count_params())})
 print("Number of model params : " + str(model.count_params()))
 
@@ -594,7 +613,6 @@ model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
 
 
 myloss = nn.MSELoss()
@@ -618,16 +636,13 @@ for ep in tqdm(range(epochs)):
 
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
         
         loss = 0 
         for tt in range(t_sets):
             x = xx[:,tt]
             y = yy[:,tt]
-            out, hidden = model(x, hidden)       
+            out = model(x)  
             loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-            loss += myloss(out, yy[:, tt])
-
 
         loss.backward()
         optimizer.step()
@@ -638,15 +653,13 @@ for ep in tqdm(range(epochs)):
             loss = 0
             xx = xx.to(device)
             yy = yy.to(device)
-            hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
 
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            out, hidden = model(x, hidden)       
-            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-        
-        test_l2 += loss.item()
+            for tt in range(t_sets):
+                x = xx[:,tt]
+                y = yy[:,tt]
+                out = model(x)  
+                loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
+            test_l2 += loss.item()
 
 
     t2 = default_timer()
@@ -663,7 +676,7 @@ train_time = time.time() - start_time
 
 # %%
 
-model_loc = file_loc + '/Models/FRNN_rba_' + run.name + '.pth'
+model_loc = file_loc + '/Models/FNO_rbb_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
@@ -681,14 +694,14 @@ with torch.no_grad():
         loss = 0
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
 
         for tt in range(t_sets):
             x = xx[:,tt]
             y = yy[:,tt]
-            pred, hidden = model(x, hidden)     
+            pred = model(x)     
             pred_set[index, tt]=pred   
             loss += myloss(pred.reshape(batch_size, -1), y.reshape(batch_size, -1))
+        test_l2 += loss.item()
     
 test_l2 = (pred_set - test_u_norm).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
@@ -702,7 +715,6 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
-
 idx = np.random.randint(0,ntest) 
 idx = 0
 
@@ -748,7 +760,7 @@ u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
 pcm = ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
-ax.set_ylabel('FRNN')
+ax.set_ylabel('FNO')
 
 fig.colorbar(pcm, pad=0.05)
 
@@ -765,12 +777,11 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/FRNN_rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/FNO_rbb_' + run.name + '.png'
 plt.savefig(output_plot)
-
 # %% 
 
-CODE = ['FRNN_rba.py']
+CODE = ['FNO_rbb_shot_aware.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 

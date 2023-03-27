@@ -693,7 +693,6 @@ with torch.no_grad():
             pred, hidden = model(x, hidden)     
             pred_set[index, tt]=pred   
             loss += myloss(pred.reshape(batch_size, -1), y.reshape(batch_size, -1))
-        test_l2 += loss.item()
     
 test_l2 = (pred_set - test_u_norm).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
