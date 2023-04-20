@@ -6,39 +6,39 @@ Created on Thu July 13 2022
 
 @author: vgopakum
 
-FRNN on RBA Camera Data. Data Pipeline is reconstructed to be fed
+FRNN on B Camera Data. Data Pipeline is reconstructed to be fed
 in a shot-aware sequential manner in line with a Recurrent model
 
 
 """
 
 # %%
-configuration = {"Case": 'RBA Camera',
+configuration = {"Case": 'RBB Camera',
                  "Type": 'Elman RNN',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
                  "Epochs": 500,
-                 "Batch Size": 5,
+                 "Batch Size": 2,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 20, 
-                 "T_out": 50,
+                 "T_in": 10, 
+                 "T_out": 60,
                  "Step": 10,
                  "Modes":8,
-                 "Width": 16,
+                 "Width": 32,
                  "Hidden Size":16,
-                 "Cells": 1,
+                 "Cells": 2,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rba', 'Forecasting', 'shot-aware', 'linear hidden'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rbb', 'Forecasting', 'shot-aware', 'linear-hidden'], metadata=configuration)
 
 
 
@@ -399,7 +399,7 @@ class FRNN(nn.Module):
 
         for cell in self.FRNN_Cells:
             x, h = cell(x, h)   
-
+    
         h = h.permute(0, 2, 3, 1)
         x = x.permute(0, 2, 3, 1)
 
@@ -440,43 +440,48 @@ class FRNN(nn.Module):
 ################################################################
 
 # %%
+#  30055 - 30430 : Initial RBB Camera Data
+#  29920 - 29970 : moved RBB Camera Data
+t1 = default_timer()
 
-data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
-# data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
-data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
+if configuration['Case'] == 'RBB Camera':
 
+    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_30055_30430.npy')
+    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_30055_30430.npz')
+
+elif configuration['Case'] == 'RBB Camera - Moved':
+
+    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_29920_29970.npy')
+    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_29920_29970.npz')
+
+
+# %%
 res = configuration['Resolution']
 gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res]
-
-# u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
-# u_sol = np.vstack((u_sol, u_2_sol))
+u_sol = data.astype(np.float32)[:,:,::res, ::res]#[:,:,:,60:540] #Cropped to show the centre
 u_sol = u_sol[:30]
-
 np.random.shuffle(u_sol)
-
-# %%
 
 grid_size_x = u_sol.shape[2]
 grid_size_y = u_sol.shape[3]
+S_x = grid_size_x #Grid Size
+S_y = grid_size_y #Grid Size
+
 
 u = torch.from_numpy(u_sol)
 u = u.permute(0, 2, 3, 1)
 
+if configuration['Case'] == 'RBB Camera':
+    ntrain = 50
+    ntest = 9
+elif configuration['Case'] == 'RBB Camera - Moved':
+    ntrain = 28 
+    ntest = 3 
 
-ntrain = 75
-ntest = 11
-
-ntrain = 25
-ntest = 5
 
 batch_size_test = ntest 
 
-
-S_x = grid_size_x #Grid Size
-S_y = grid_size_y #Grid Size
 
 modes = configuration['Modes']
 width = configuration['Width']
@@ -488,7 +493,6 @@ batch_size = configuration['Batch Size']
 batch_size2 = batch_size
 
 
-t1 = default_timer()
 
 
 T_in = input_size = configuration['T_in']
@@ -548,7 +552,7 @@ if norm_strategy == 'Range':
     a_normalizer = RangeNormalizer(train_a)
     y_normalizer = RangeNormalizer(train_u)
 
-if norm_strategy == 'Min-Max':
+if norm_strategy == 'Gaussian':
     a_normalizer = GaussianNormalizer(train_a)
     y_normalizer = GaussianNormalizer(train_u)
 
@@ -563,10 +567,10 @@ test_u_norm = y_normalizer.encode(test_u)
 # %%
 
 #Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
-x_grid = np.linspace(-1.0, -2.0, 400)[::res]
-# x = np.linspace(-1.0, -2.0, 608)[::res]
+x_grid = np.linspace(-1.5, 1.5, 448)[::res]
+# x = np.linspace(0, 1, 448)[::res]
 
-y_grid = np.linspace(0.0, 1.0, 512)[::res]
+y_grid = np.linspace(-2.0, 2.0, 640)[::res]
 # y = np.linspace(-1.0, 0.0, 768)[::res]
 
 
@@ -626,7 +630,7 @@ for ep in tqdm(range(epochs)):
             y = yy[:,tt]
             out, hidden = model(x, hidden)       
             loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-            loss += myloss(out, yy[:, tt])
+            # loss += myloss(out, yy[:, tt])
 
 
         loss.backward()
@@ -663,7 +667,7 @@ train_time = time.time() - start_time
 
 # %%
 
-model_loc = file_loc + '/Models/FRNN_rba_' + run.name + '.pth'
+model_loc = file_loc + '/Models/FRNN_rbb_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
@@ -765,12 +769,12 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/FRNN_rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/FRNN_rbb_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
 
-CODE = ['FRNN_rba.py']
+CODE = ['FRNN_rbb_shot_aware.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 

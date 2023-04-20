@@ -12,17 +12,17 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 """
 
 # %%
-configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
+configuration = {"Case": 'RBA Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 500,
-                 "Batch Size": 2,
+                 "Epochs": 5,
+                 "Batch Size": 20,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
-                 "Normalisation Strategy": 'Min-Max',
+                 "Normalisation Strategy": 'Range',
                  "T_in": 10, 
                  "T_out": 60,
                  "Step": 10,
@@ -32,11 +32,10 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Resolution":1, 
                  "Noise":0.0}
 
-
 # %% 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-aware'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rba', 'Forecasting', 'shot-agnostic'], metadata=configuration)
 
 
 # %%
@@ -56,23 +55,28 @@ from functools import partial
 
 import time 
 from timeit import default_timer
+from tqdm import tqdm 
 
 torch.manual_seed(0)
 np.random.seed(0)
 
+# %% 
+#Setting up the directories - data location, model location and plots. 
 import os 
 path = file_loc = os.getcwd()
 data_loc = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
 model_loc = os.getcwd()
 
 
-
-#################################################
-#
-# Utilities
-#
-#################################################
+# %%
+#Setting up CUDA
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+# %%
+##################################
+#Normalisation Functions 
+##################################
 
 
 # normalization, pointwise gaussian
@@ -113,7 +117,7 @@ class UnitGaussianNormalizer(object):
         self.mean = self.mean.cpu()
         self.std = self.std.cpu()
 
-# normalization, Gaussian
+# normalization, Gaussian - across the entire dataset
 class GaussianNormalizer(object):
     def __init__(self, x, eps=0.00001):
         super(GaussianNormalizer, self).__init__()
@@ -139,9 +143,9 @@ class GaussianNormalizer(object):
         self.std = self.std.cpu()
 
 
-# normalization, scaling by range
+# normalization, scaling by range - pointwise
 class RangeNormalizer(object):
-    def __init__(self, x, low=0.0, high=1.0):
+    def __init__(self, x, low=-1.0, high=1.0):
         super(RangeNormalizer, self).__init__()
         mymin = torch.min(x, 0)[0].view(-1)
         mymax = torch.max(x, 0)[0].view(-1)
@@ -163,6 +167,7 @@ class RangeNormalizer(object):
         x = x.view(s)
         return x
 
+
     def cuda(self):
         self.a = self.a.cuda()
         self.b = self.b.cuda()
@@ -171,8 +176,7 @@ class RangeNormalizer(object):
         self.a = self.a.cpu()
         self.b = self.b.cpu()
 
-
-#normalization, rangewise but single value. 
+#normalization, rangewise but across the full domain 
 class MinMax_Normalizer(object):
     def __init__(self, x, low=-1.0, high=1.0):
         super(MinMax_Normalizer, self).__init__()
@@ -204,6 +208,11 @@ class MinMax_Normalizer(object):
         self.a = self.a.cpu()
         self.b = self.b.cpu()
 
+
+# %%
+##################################
+# Loss Functions
+##################################
 
 #loss function with rel/abs Lp loss
 class LpLoss(object):
@@ -252,30 +261,9 @@ class LpLoss(object):
         return self.rel(x, y)
 
 
-#Adding Gaussian Noise to the training dataset
-class AddGaussianNoise(object):
-    def __init__(self, mean=0., std=1.):
-        self.mean = torch.FloatTensor([mean])
-        self.std = torch.FloatTensor([std])
-        
-    def __call__(self, tensor):
-        return tensor + torch.randn(tensor.size()).cuda() * self.std + self.mean
-    
-    def __repr__(self):
-        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
-
-    def cuda(self):
-        self.mean = self.mean.cuda()
-        self.std = self.std.cuda()
-
-    def cpu(self):
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-
-# additive_noise = AddGaussianNoise(0.0, configuration['Noise'])
-# additive_noise.cuda()
 
 # %%
+
 
 ################################################################
 # fourier layer
@@ -348,9 +336,9 @@ class FNO2d(nn.Module):
         self.conv0 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        # self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         
         # self.mlp0 = MLP(self.width, self.width, self.width)
         # self.mlp1 = MLP(self.width, self.width, self.width)
@@ -362,9 +350,9 @@ class FNO2d(nn.Module):
         self.w0 = nn.Conv2d(self.width, self.width, 1)
         self.w1 = nn.Conv2d(self.width, self.width, 1)
         self.w2 = nn.Conv2d(self.width, self.width, 1)
-        # self.w3 = nn.Conv2d(self.width, self.width, 1)
-        # self.w4 = nn.Conv2d(self.width, self.width, 1)
-        # self.w5 = nn.Conv2d(self.width, self.width, 1)
+        self.w3 = nn.Conv2d(self.width, self.width, 1)
+        self.w4 = nn.Conv2d(self.width, self.width, 1)
+        self.w5 = nn.Conv2d(self.width, self.width, 1)
 
         # self.norm = nn.InstanceNorm2d(self.width)
         self.norm = nn.Identity()
@@ -397,20 +385,20 @@ class FNO2d(nn.Module):
         x = x1+x2
         x = F.gelu(x)
 
-        # x1 = self.norm(self.conv3(self.norm(x)))
-        # # x1 = self.mlp3(x1)
-        # x2 = self.w3(x)
-        # x = x1+x2
+        x1 = self.norm(self.conv3(self.norm(x)))
+        # x1 = self.mlp3(x1)
+        x2 = self.w3(x)
+        x = x1+x2
 
-        # x1 = self.norm(self.conv4(self.norm(x)))
-        # # x1 = self.mlp4(x1)
-        # x2 = self.w4(x)
-        # x = x1+x2
+        x1 = self.norm(self.conv4(self.norm(x)))
+        # x1 = self.mlp4(x1)
+        x2 = self.w4(x)
+        x = x1+x2
 
-        # x1 = self.norm(self.conv5(self.norm(x)))
-        # # x1 = self.mlp5(x1)
-        # x2 = self.w5(x)
-        # x = x1+x2
+        x1 = self.norm(self.conv5(self.norm(x)))
+        # x1 = self.mlp5(x1)
+        x2 = self.w5(x)
+        x = x1+x2
 
         x = x.permute(0, 2, 3, 1)
         x = self.fc1(x)
@@ -443,10 +431,7 @@ class FNO2d(nn.Module):
 
         return c
 
-
-
 # %%
-
 
 ################################################################
 # Loading Data 
@@ -454,33 +439,20 @@ class FNO2d(nn.Module):
 
 # %%
 
-#  30055 - 30430 : Initial RBB Camera Data
-#  29920 - 29970 : moved RBB Camera Data
+data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
+data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
+# data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
+# data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
-if configuration['Case'] == 'RBB Camera':
-
-    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_30055_30430.npy')
-    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_30055_30430.npz')
-
-elif configuration['Case'] == 'RBB Camera - Moved':
-
-    data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_29920_29970.npy')
-    data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_29920_29970.npz')
-
-
-
-# %%
 res = configuration['Resolution']
-gridx = data_calib['r_pos'][::res, ::res]
-gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res]#[:,:,:,60:540] #Cropped to show the centre
+# gridx = data_calib['r_pos'][::res, ::res]
+# gridy = data_calib['z_pos'][::res, ::res]
+u_sol = data.astype(np.float32)[:,:,::res, ::res]
+
+u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
+u_sol = np.vstack((u_sol, u_2_sol))
+
 np.random.shuffle(u_sol)
-
-grid_size_x = u_sol.shape[2]
-grid_size_y = u_sol.shape[3]
-S_x = grid_size_x #Grid Size
-S_y = grid_size_y #Grid Size
-
 
 # %%
 
@@ -503,6 +475,8 @@ batch_size_test = ntest
 S_x = grid_size_x #Grid Size
 S_y = grid_size_y #Grid Size
 
+#Extracting hyperparameters from the config dict
+
 modes = configuration['Modes']
 width = configuration['Width']
 output_size = configuration['Step']
@@ -519,28 +493,36 @@ T = configuration['T_out']
 T_out = T
 step = output_size = configuration['Step']
 
-# %%
-
-################################################################
-# Sort Data into test/train sets -- Sequential - shot aware
-################################################################
-
-t_sets = T_in + T_out - input_size - output_size
-
-u1 = torch.zeros(len(u), t_sets, S_x, S_y, input_size)
-u2 = torch.zeros(len(u), t_sets, S_x, S_y, step)
-
-for ii in tqdm(range(len(u))):
-    for jj in range(t_sets):
-        u1[ii, jj] = u[ii, :, :, jj:jj+input_size]
-        u2[ii, jj] = u[ii, :, :, jj+input_size:jj+input_size+step]
-        
 modes = configuration['Modes']
 width = configuration['Width']
 
 batch_size = configuration['Batch Size']
 batch_size2 = batch_size
 batch_size_test = ntest 
+# %%
+
+################################################################
+# Sort Data into test/train sets -- Sequential - Ignorant of shots but only sequences
+################################################################
+
+
+t_sets = T_in + T_out - input_size - output_size
+
+u1 = []
+u2 = []
+for ii in tqdm(range(len(u))):
+    for jj in range(t_sets):
+        u1.append(u[ii, :, :, jj:jj+input_size])
+        u2.append(u[ii, :, :, jj+input_size:jj+input_size+step])
+    
+# u1 = np.asarray(u1)
+# u2 = np.asarray(u2)
+
+u1 = torch.stack(u1)
+u2 = torch.stack(u2)
+
+ntrain = int(ntrain*t_sets)
+ntest = len(u1) - ntrain
 
 
 t1 = default_timer()
@@ -555,41 +537,44 @@ print(train_u.shape)
 print(test_u.shape)
 
 # %%
-#Normalising the train and test datasets with the preferred normalisation. 
-
-norm_strategy = configuration['Normalisation Strategy']
-
-if norm_strategy == 'Min-Max':
-    a_normalizer = MinMax_Normalizer(train_a)
-    y_normalizer = MinMax_Normalizer(train_u)
-
-if norm_strategy == 'Range':
-    a_normalizer = RangeNormalizer(train_a)
-    y_normalizer = RangeNormalizer(train_u)
-
-if norm_strategy == 'Min-Max':
-    a_normalizer = GaussianNormalizer(train_a)
-    y_normalizer = GaussianNormalizer(train_u)
-
-
-
+# a_normalizer = UnitGaussianNormalizer(train_a)
+a_normalizer = RangeNormalizer(train_a)
 train_a = a_normalizer.encode(train_a)
 test_a = a_normalizer.encode(test_a)
 
+# y_normalizer = UnitGaussianNormalizer(train_u)
+y_normalizer = RangeNormalizer(train_u)
 train_u = y_normalizer.encode(train_u)
 test_u_norm = y_normalizer.encode(test_u)
+
+print(a_normalizer.a, a_normalizer.b)
+print(y_normalizer.a, y_normalizer.b)
+
+np.save('a_a', a_normalizer.a.numpy())
+np.save('a_b', a_normalizer.b.numpy())
+np.save('y_a', y_normalizer.a.numpy())
+np.save('y_b', y_normalizer.b.numpy())
 
 # %%
 
 #Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
-# Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
-# pad the location (x,y)
-x_grid = np.linspace(-1.5, 1.5, 448)[::res]
-# x = np.linspace(0, 1, 448)[::res]
+x_grid = np.linspace(-1.0, -2.0, 400)[::res]
+# x = np.linspace(-1.0, -2.0, 608)[::res]
+gridx = torch.tensor(x_grid, dtype=torch.float)
+gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
 
-y_grid = np.linspace(-2.0, 2.0, 640)[::res]
-# y_grid = np.linspace(-2.0, 2.0, 480)[::res] #Cropped to just the centre 
-# y = np.linspace(0, 1*(640/448), 640)[::res]
+y_grid = np.linspace(0.0, 1.0, 512)[::res]
+# y = np.linspace(-1.0, 0.0, 768)[::res]
+gridy = torch.tensor(y_grid, dtype=torch.float)
+gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
+
+#Using the calibrated R and Z positions averaged over the time and shots. 
+gridx = torch.tensor(gridx, dtype=torch.float)
+gridy = torch.tensor(gridy, dtype=torch.float)
+gridx = gridx.reshape(1, S_x, S_y, 1)
+gridy = gridy.reshape(1, S_x, S_y, 1)
+
+
 
 train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_norm), batch_size=batch_size_test, shuffle=False)
@@ -604,6 +589,7 @@ print('preprocessing finished, time used:', t2-t1)
 ################################################################
 
 model = FNO2d(modes, modes, width)
+# model.load_state_dict(torch.load(file_loc + '/Models/FNO_rbb_lazy-barbette.pth', map_location=torch.device('cpu')))
 run.update_metadata({'Number of Params': int(model.count_params())})
 print("Number of model params : " + str(model.count_params()))
 
@@ -612,9 +598,9 @@ model.to(device)
 
 # wandb.watch(model, log='all')
 
+#Setting up the optimisation schedule. 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
 
 myloss = nn.MSELoss()
     
@@ -624,6 +610,7 @@ if torch.cuda.is_available():
     y_normalizer.cuda()
 
 # %%
+#Training Loop
 #Sequential 
 
 start_time = time.time()
@@ -634,20 +621,17 @@ for ep in tqdm(range(epochs)):
     t1 = default_timer()
     for xx, yy in train_loader:
         optimizer.zero_grad()
-
+        
         xx = xx.to(device)
         yy = yy.to(device)
         
-        loss = 0 
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            out = model(x)  
-            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
+        out = model(xx)
+        
+        loss = myloss(out, yy)
+        train_l2 += loss
 
         loss.backward()
         optimizer.step()
-        train_l2 += loss        
 
     with torch.no_grad():
         for xx, yy in test_loader:
@@ -655,11 +639,8 @@ for ep in tqdm(range(epochs)):
             xx = xx.to(device)
             yy = yy.to(device)
 
-            for tt in range(t_sets):
-                x = xx[:,tt]
-                y = yy[:,tt]
-                out = model(x)  
-                loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
+            pred = model(xx)
+            loss = myloss(pred, yy)
             test_l2 += loss.item()
 
 
@@ -676,14 +657,13 @@ for ep in tqdm(range(epochs)):
 train_time = time.time() - start_time 
 
 # %%
-
-model_loc = file_loc + '/Models/FNO_rbb_' + run.name + '.pth'
+#Saving the Model
+model_loc = file_loc + '/Models/FNO_rba_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
 # %%
-#Testing 
-#Sequential
+#Testing - Sequential
 batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
@@ -691,23 +671,20 @@ pred_set = torch.zeros(test_u.shape)
 index = 0
 
 with torch.no_grad():
-    for xx, yy in test_loader:
-        loss = 0
+    for xx, yy in tqdm(test_loader):
+        
         xx = xx.to(device)
         yy = yy.to(device)
-
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            pred = model(x)     
-            pred_set[index, tt]=pred   
-            loss += myloss(pred.reshape(batch_size, -1), y.reshape(batch_size, -1))
-        test_l2 += loss.item()
+        
+        pred = model(xx)
+        pred_set[index]=pred
+        index += 1
     
 test_l2 = (pred_set - test_u_norm).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
 
 
+#Logging Metrics 
 
 run.update_metadata({'Training Time': float(train_time),
                      'MSE Test Error': float(test_l2)
@@ -716,42 +693,44 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
+#Plotting the comparison plots
+
 idx = np.random.randint(0,ntest) 
-idx = 0
+# idx = 53
 
 u_field = test_u[idx]
 
-v_min_1 = torch.min(u_field[0, :,:,-1])
-v_max_1 = torch.max(u_field[0, :,:,-1])
+v_min_1 = torch.min(u_field[:,:,0])
+v_max_1 = torch.max(u_field[:,:,0])
 
-v_min_2 = torch.min(u_field[int(t_sets/2), :, :, -1])
-v_max_2 = torch.max(u_field[int(t_sets/2), :, :, -1])
+v_min_2 = torch.min(u_field[:, :, int(step/2)])
+v_max_2 = torch.max(u_field[:, :, int(step/2)])
 
-v_min_3 = torch.min(u_field[-1, :, :, -1])
-v_max_3 = torch.max(u_field[-1, :, :, -1])
+v_min_3 = torch.min(u_field[:, :, -1])
+v_max_3 = torch.max(u_field[:, :, -1])
 
 fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
-pcm =ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 # ax.title.set_text('Initial')
-ax.title.set_text('t='+ str(T_in+step))
+ax.title.set_text('t='+ str(T_in))
 ax.set_ylabel('Solution')
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,2)
-pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 # ax.title.set_text('Middle')
-ax.title.set_text('t='+ str(int((T_in+t_sets/2 +step))))
+ax.title.set_text('t='+ str(int((T+T_in)/2)))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,3)
-pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 # ax.title.set_text('Final')
-ax.title.set_text('t='+str(T_in + step + t_sets))
+ax.title.set_text('t='+str(T+T_in))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
@@ -760,29 +739,31 @@ fig.colorbar(pcm, pad=0.05)
 u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
-pcm = ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+pcm = ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 ax.set_ylabel('FNO')
 
 fig.colorbar(pcm, pad=0.05)
 
 ax = fig.add_subplot(2,3,5)
-pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,6)
-pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/FNO_rbb_' + run.name + '.png'
+output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
 plt.savefig(output_plot)
-# %% 
 
-CODE = ['FNO_rbb_shot_aware.py']
+# %% 
+#Simvue Artifact storage
+
+CODE = ['FNO_rba_shot_agnostic.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
@@ -816,3 +797,4 @@ for output_file in OUTPUTS:
         print('ERROR: output file %s does not exist' % output_file)
 
 run.close()
+

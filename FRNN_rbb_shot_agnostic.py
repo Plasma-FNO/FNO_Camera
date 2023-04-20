@@ -6,9 +6,8 @@ Created on Thu July 13 2022
 
 @author: vgopakum
 
-FRNN on B Camera Data. Data Pipeline is reconstructed to be fed
-in a shot-aware sequential manner in line with a Recurrent model
-
+F-RNN on RBA Camera Data. Data Pipeline is reconstructed to be fed
+in a shot-agnostic sequential manner in line with a Recurrent model
 
 """
 
@@ -18,28 +17,27 @@ configuration = {"Case": 'RBB Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
                  "Epochs": 500,
-                 "Batch Size": 5,
+                 "Batch Size": 20,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 20, 
-                 "T_out": 50,
+                 "T_in": 10, 
+                 "T_out": 60,
                  "Step": 10,
                  "Modes":8,
-                 "Width": 16,
+                 "Width": 32,
                  "Hidden Size":16,
-                 "Cells": 1,
+                 "Cells": 2,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
-
+# %% 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rbb', 'Forecasting', 'shot-aware'], metadata=configuration)
-
+run.init(folder="/FNO_Camera", tags=['FRNN', 'Camera', 'rba', 'Forecasting', 'shot-agnostic'], metadata=configuration)
 
 
 # %%
@@ -59,23 +57,28 @@ from functools import partial
 
 import time 
 from timeit import default_timer
+from tqdm import tqdm 
 
 torch.manual_seed(0)
 np.random.seed(0)
 
+# %% 
+#Setting up the directories - data location, model location and plots. 
 import os 
 path = file_loc = os.getcwd()
 data_loc = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
 model_loc = os.getcwd()
 
 
-
-#################################################
-#
-# Utilities
-#
-#################################################
+# %%
+#Setting up CUDA
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+# %%
+##################################
+#Normalisation Functions 
+##################################
 
 
 # normalization, pointwise gaussian
@@ -116,7 +119,7 @@ class UnitGaussianNormalizer(object):
         self.mean = self.mean.cpu()
         self.std = self.std.cpu()
 
-# normalization, Gaussian
+# normalization, Gaussian - across the entire dataset
 class GaussianNormalizer(object):
     def __init__(self, x, eps=0.00001):
         super(GaussianNormalizer, self).__init__()
@@ -142,9 +145,9 @@ class GaussianNormalizer(object):
         self.std = self.std.cpu()
 
 
-# normalization, scaling by range
+# normalization, scaling by range - pointwise
 class RangeNormalizer(object):
-    def __init__(self, x, low=0.0, high=1.0):
+    def __init__(self, x, low=-1.0, high=1.0):
         super(RangeNormalizer, self).__init__()
         mymin = torch.min(x, 0)[0].view(-1)
         mymax = torch.max(x, 0)[0].view(-1)
@@ -166,6 +169,7 @@ class RangeNormalizer(object):
         x = x.view(s)
         return x
 
+
     def cuda(self):
         self.a = self.a.cuda()
         self.b = self.b.cuda()
@@ -174,8 +178,7 @@ class RangeNormalizer(object):
         self.a = self.a.cpu()
         self.b = self.b.cpu()
 
-
-#normalization, rangewise but single value. 
+#normalization, rangewise but across the full domain 
 class MinMax_Normalizer(object):
     def __init__(self, x, low=-1.0, high=1.0):
         super(MinMax_Normalizer, self).__init__()
@@ -208,6 +211,10 @@ class MinMax_Normalizer(object):
         self.b = self.b.cpu()
 
 
+# %%
+##################################
+# Loss Functions
+##################################
 
 #loss function with rel/abs Lp loss
 class LpLoss(object):
@@ -254,32 +261,11 @@ class LpLoss(object):
 
     def __call__(self, x, y):
         return self.rel(x, y)
-# %%
 
-#Adding Gaussian Noise to the training dataset
-class AddGaussianNoise(object):
-    def __init__(self, mean=0., std=1.):
-        self.mean = torch.FloatTensor([mean])
-        self.std = torch.FloatTensor([std])
-        
-    def __call__(self, tensor):
-        return tensor + torch.randn(tensor.size()).cuda() * self.std + self.mean
-    
-    def __repr__(self):
-        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
-    def cuda(self):
-        self.mean = self.mean.cuda()
-        self.std = self.std.cuda()
-
-    def cpu(self):
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-
-# additive_noise = AddGaussianNoise(0.0, configuration['Noise'])
-# additive_noise.cuda()
 
 # %%
+
 
 ################################################################
 # fourier layer
@@ -332,7 +318,7 @@ class FRNN_Cell(nn.Module):
         self.width = width
         
         self.F_x = SpectralConv2d(self.width, self.width, self.modes, self.modes)
-        self.F_h = SpectralConv2d(self.width, self.width, self.modes, self.modes)
+        # self.F_h = SpectralConv2d(self.width, self.width, self.modes, self.modes)
 
         self.W_x = nn.Conv2d(self.width, self.width, 1)
         self.W_h = nn.Conv2d(self.width, self.width, 1)
@@ -342,9 +328,9 @@ class FRNN_Cell(nn.Module):
         batchsize = x.shape[0]
         size_x, size_y = x.shape[1], x.shape[2]
 
-        h1 = self.F_h(h)
+        # h1 = self.F_h(h)
         h2 = self.W_h(h)
-        h = h1 + h2
+        h = h2
         h = F.gelu(h)
         
         x1 = self.F_x(x)
@@ -377,7 +363,7 @@ class FRNN(nn.Module):
         self.linear_in_x = nn.Linear(T_in+2, self.width)
         self.linear_in_h = nn.Linear(self.n_hidden, self.width)
         self.linear_out_x = nn.Linear(self.width, self.n_output)
-        self.linear_out_h = nn.Linear(self.width , self.n_hidden-2)
+        self.linear_out_h = nn.Linear(self.width , self.n_hidden)
 
         self.FRNN_Cells = nn.ModuleList()
         
@@ -388,7 +374,7 @@ class FRNN(nn.Module):
    def forward(self, x, h):
         grid = self.get_grid(x.shape, x.device)
         x = torch.cat((x, grid), dim=-1)
-        h = torch.cat((h, grid), dim=-1)
+        # h = torch.cat((h, grid), dim=-1)
 
 
         h = self.linear_in_h(h)
@@ -431,9 +417,7 @@ class FRNN(nn.Module):
             c += reduce(operator.mul, list(p.size()))
     
         return c
-        
 # %%
-
 
 ################################################################
 # Loading Data 
@@ -460,7 +444,7 @@ res = configuration['Resolution']
 gridx = data_calib['r_pos'][::res, ::res]
 gridy = data_calib['z_pos'][::res, ::res]
 u_sol = data.astype(np.float32)[:,:,::res, ::res]#[:,:,:,60:540] #Cropped to show the centre
-u_sol = u_sol[:30]
+u_sol = u_sol
 np.random.shuffle(u_sol)
 
 grid_size_x = u_sol.shape[2]
@@ -494,7 +478,6 @@ batch_size2 = batch_size
 
 
 
-
 T_in = input_size = configuration['T_in']
 T = configuration['T_out']
 T_out = T
@@ -503,29 +486,27 @@ step = output_size = configuration['Step']
 # %%
 
 ################################################################
-# Sort Data into test/train sets -- Sequential - shot aware
+# Sort Data into test/train sets -- Sequential - Ignorant of shots but only sequences
 ################################################################
+
 
 t_sets = T_in + T_out - input_size - output_size
 
-u1 = torch.zeros(len(u), t_sets, S_x, S_y, input_size)
-u2 = torch.zeros(len(u), t_sets, S_x, S_y, step)
-
+u1 = []
+u2 = []
 for ii in tqdm(range(len(u))):
     for jj in range(t_sets):
-        u1[ii, jj] = u[ii, :, :, jj:jj+input_size]
-        u2[ii, jj] = u[ii, :, :, jj+input_size:jj+input_size+step]
+        u1.append(u[ii, :, :, jj:jj+input_size])
+        u2.append(u[ii, :, :, jj+input_size:jj+input_size+step])
     
 # u1 = np.asarray(u1)
 # u2 = np.asarray(u2)
 
+u1 = torch.stack(u1)
+u2 = torch.stack(u2)
 
-modes = configuration['Modes']
-width = configuration['Width']
-
-batch_size = configuration['Batch Size']
-batch_size2 = batch_size
-batch_size_test = ntest 
+ntrain = int(ntrain*t_sets)
+ntest = len(u1) - ntrain
 
 
 t1 = default_timer()
@@ -540,27 +521,13 @@ print(train_u.shape)
 print(test_u.shape)
 
 # %%
-#Normalising the train and test datasets with the preferred normalisation. 
-
-norm_strategy = configuration['Normalisation Strategy']
-
-if norm_strategy == 'Min-Max':
-    a_normalizer = MinMax_Normalizer(train_a)
-    y_normalizer = MinMax_Normalizer(train_u)
-
-if norm_strategy == 'Range':
-    a_normalizer = RangeNormalizer(train_a)
-    y_normalizer = RangeNormalizer(train_u)
-
-if norm_strategy == 'Min-Max':
-    a_normalizer = GaussianNormalizer(train_a)
-    y_normalizer = GaussianNormalizer(train_u)
-
-
-
+# a_normalizer = UnitGaussianNormalizer(train_a)
+a_normalizer = RangeNormalizer(train_a)
 train_a = a_normalizer.encode(train_a)
 test_a = a_normalizer.encode(test_a)
 
+# y_normalizer = UnitGaussianNormalizer(train_u)
+y_normalizer = RangeNormalizer(train_u)
 train_u = y_normalizer.encode(train_u)
 test_u_norm = y_normalizer.encode(test_u)
 
@@ -572,6 +539,13 @@ x_grid = np.linspace(-1.5, 1.5, 448)[::res]
 
 y_grid = np.linspace(-2.0, 2.0, 640)[::res]
 # y = np.linspace(-1.0, 0.0, 768)[::res]
+
+
+#Using the calibrated R and Z positions averaged over the time and shots. 
+gridx = torch.tensor(gridx, dtype=torch.float)
+gridy = torch.tensor(gridy, dtype=torch.float)
+gridx = gridx.reshape(1, S_x, S_y, 1)
+gridy = gridy.reshape(1, S_x, S_y, 1)
 
 
 
@@ -596,10 +570,9 @@ model.to(device)
 
 # wandb.watch(model, log='all')
 
+#Setting up the optimisation schedule. 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
-
 
 myloss = nn.MSELoss()
     
@@ -609,6 +582,7 @@ if torch.cuda.is_available():
     y_normalizer.cuda()
 
 # %%
+#Training Loop
 #Sequential 
 
 start_time = time.time()
@@ -619,38 +593,30 @@ for ep in tqdm(range(epochs)):
     t1 = default_timer()
     for xx, yy in train_loader:
         optimizer.zero_grad()
-
+        
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
+        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size).to(device)
         
-        loss = 0 
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            out, hidden = model(x, hidden)       
-            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-            loss += myloss(out, yy[:, tt])
-
+        out, hidden = model(xx, hidden)       
+        
+        loss = myloss(out, yy)
+        train_l2 += loss
 
         loss.backward()
         optimizer.step()
-        train_l2 += loss        
 
     with torch.no_grad():
         for xx, yy in test_loader:
             loss = 0
             xx = xx.to(device)
             yy = yy.to(device)
-            hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
+            hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size).to(device)
+            
+            pred, hidden = model(xx, hidden)  
 
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            out, hidden = model(x, hidden)       
-            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-        
-        test_l2 += loss.item()
+            loss = myloss(pred, yy)
+            test_l2 += loss.item()
 
 
     t2 = default_timer()
@@ -666,14 +632,13 @@ for ep in tqdm(range(epochs)):
 train_time = time.time() - start_time 
 
 # %%
-
+#Saving the Model
 model_loc = file_loc + '/Models/FRNN_rbb_' + run.name + '.pth'
 torch.save(model.state_dict(),  model_loc)
 
        
 # %%
-#Testing 
-#Sequential
+#Testing - Sequential
 batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
@@ -681,23 +646,22 @@ pred_set = torch.zeros(test_u.shape)
 index = 0
 
 with torch.no_grad():
-    for xx, yy in test_loader:
-        loss = 0
+    for xx, yy in tqdm(test_loader):
+        
         xx = xx.to(device)
         yy = yy.to(device)
-        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
-
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            pred, hidden = model(x, hidden)     
-            pred_set[index, tt]=pred   
-            loss += myloss(pred.reshape(batch_size, -1), y.reshape(batch_size, -1))
+        
+        hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size).to(device)
+        
+        pred, hidden = model(xx, hidden)  
+        pred_set[index]=pred
+        index += 1
     
 test_l2 = (pred_set - test_u_norm).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
 
 
+#Logging Metrics 
 
 run.update_metadata({'Training Time': float(train_time),
                      'MSE Test Error': float(test_l2)
@@ -706,43 +670,44 @@ run.update_metadata({'Training Time': float(train_time),
 pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
+#Plotting the comparison plots
 
-idx = np.random.randint(0,ntest) 
-idx = 0
+# idx = np.random.randint(0,ntest) 
+idx = 53
 
 u_field = test_u[idx]
 
-v_min_1 = torch.min(u_field[0, :,:,-1])
-v_max_1 = torch.max(u_field[0, :,:,-1])
+v_min_1 = torch.min(u_field[:,:,0])
+v_max_1 = torch.max(u_field[:,:,0])
 
-v_min_2 = torch.min(u_field[int(t_sets/2), :, :, -1])
-v_max_2 = torch.max(u_field[int(t_sets/2), :, :, -1])
+v_min_2 = torch.min(u_field[:, :, int(step/2)])
+v_max_2 = torch.max(u_field[:, :, int(step/2)])
 
-v_min_3 = torch.min(u_field[-1, :, :, -1])
-v_max_3 = torch.max(u_field[-1, :, :, -1])
+v_min_3 = torch.min(u_field[:, :, -1])
+v_max_3 = torch.max(u_field[:, :, -1])
 
 fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
-pcm =ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 # ax.title.set_text('Initial')
-ax.title.set_text('t='+ str(T_in+step))
+ax.title.set_text('t='+ str(T_in))
 ax.set_ylabel('Solution')
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,2)
-pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 # ax.title.set_text('Middle')
-ax.title.set_text('t='+ str(int((T_in+t_sets/2 +step))))
+ax.title.set_text('t='+ str(int((T+T_in)/2)))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,3)
-pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 # ax.title.set_text('Final')
-ax.title.set_text('t='+str(T_in + step + t_sets))
+ax.title.set_text('t='+str(T+T_in))
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
@@ -751,30 +716,31 @@ fig.colorbar(pcm, pad=0.05)
 u_field = pred_set[idx]
 
 ax = fig.add_subplot(2,3,4)
-pcm = ax.imshow(u_field[0,:,:,-1], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
-ax.set_ylabel('FRNN')
+pcm = ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
+ax.set_ylabel('F-RNN')
 
 fig.colorbar(pcm, pad=0.05)
 
 ax = fig.add_subplot(2,3,5)
-pcm = ax.imshow(u_field[int(t_sets/2),:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
+pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
 
 ax = fig.add_subplot(2,3,6)
-pcm = ax.imshow(u_field[-1,:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
+pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/FRNN_rbb_' + run.name + '.png'
+output_plot = file_loc + '/Plots/rbb_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
+#Simvue Artifact storage
 
-CODE = ['FRNN_rbb.py']
+CODE = ['FRNN_rba_shot_agnostic.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
