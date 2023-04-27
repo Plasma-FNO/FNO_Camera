@@ -15,19 +15,19 @@ in a shot-agnostic sequential manner in line with a Recurrent model
 configuration = {"Case": 'RBA Camera',
                  "Pipeline": 'Sequential',
                  "Calibration": 'Calcam',
-                 "Epochs": 5,
-                 "Batch Size": 20,
+                 "Epochs": 500,
+                 "Batch Size": 50,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 50,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
-                 "Normalisation Strategy": 'Range',
+                 "Normalisation Strategy": 'Min-Max',
                  "T_in": 10, 
                  "T_out": 60,
                  "Step": 10,
-                 "Modes":8,
-                 "Width": 32,
+                 "Modes":16,
+                 "Width": 16,
                  "Variables": 1,
                  "Resolution":1, 
                  "Noise":0.0}
@@ -440,7 +440,7 @@ class FNO2d(nn.Module):
 # %%
 
 data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
+# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
 # data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
 # data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
@@ -448,9 +448,11 @@ res = configuration['Resolution']
 # gridx = data_calib['r_pos'][::res, ::res]
 # gridy = data_calib['z_pos'][::res, ::res]
 u_sol = data.astype(np.float32)[:,:,::res, ::res]
+rba_exclude = [25, 40]
+u_sol = np.delete(u_sol, rba_exclude, axis=0)
 
-u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
-u_sol = np.vstack((u_sol, u_2_sol))
+# u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
+# u_sol = np.vstack((u_sol, u_2_sol))
 
 np.random.shuffle(u_sol)
 
@@ -461,13 +463,13 @@ grid_size_y = u_sol.shape[3]
 
 u = torch.from_numpy(u_sol)
 u = u.permute(0, 2, 3, 1)
+u = u[...,5:][:4]
 
+ntrain = 49
+ntest = 8
 
-ntrain = 75
-ntest = 11
-
-ntrain = 25
-ntest = 5
+ntrain = 2
+ntest = 2
 
 batch_size_test = ntest 
 
@@ -537,23 +539,30 @@ print(train_u.shape)
 print(test_u.shape)
 
 # %%
-# a_normalizer = UnitGaussianNormalizer(train_a)
-a_normalizer = RangeNormalizer(train_a)
+
+#Normalising the train and test datasets with the preferred normalisation. 
+
+norm_strategy = configuration['Normalisation Strategy']
+
+if norm_strategy == 'Min-Max':
+    a_normalizer = MinMax_Normalizer(train_a)
+    y_normalizer = MinMax_Normalizer(train_u)
+
+if norm_strategy == 'Range':
+    a_normalizer = RangeNormalizer(train_a)
+    y_normalizer = RangeNormalizer(train_u)
+
+if norm_strategy == 'Gaussian':
+    a_normalizer = GaussianNormalizer(train_a)
+    y_normalizer = GaussianNormalizer(train_u)
+
+
+
 train_a = a_normalizer.encode(train_a)
 test_a = a_normalizer.encode(test_a)
 
-# y_normalizer = UnitGaussianNormalizer(train_u)
-y_normalizer = RangeNormalizer(train_u)
 train_u = y_normalizer.encode(train_u)
-test_u_norm = y_normalizer.encode(test_u)
-
-print(a_normalizer.a, a_normalizer.b)
-print(y_normalizer.a, y_normalizer.b)
-
-np.save('a_a', a_normalizer.a.numpy())
-np.save('a_b', a_normalizer.b.numpy())
-np.save('y_a', y_normalizer.a.numpy())
-np.save('y_b', y_normalizer.b.numpy())
+test_u_encoded = y_normalizer.encode(test_u)
 
 # %%
 
@@ -577,7 +586,7 @@ gridy = gridy.reshape(1, S_x, S_y, 1)
 
 
 train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
-test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_norm), batch_size=batch_size_test, shuffle=False)
+test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_encoded), batch_size=batch_size_test, shuffle=False)
 
 t2 = default_timer()
 print('preprocessing finished, time used:', t2-t1)
@@ -680,7 +689,7 @@ with torch.no_grad():
         pred_set[index]=pred
         index += 1
     
-test_l2 = (pred_set - test_u_norm).pow(2).mean()
+test_l2 = (pred_set - test_u_encoded).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
 
 

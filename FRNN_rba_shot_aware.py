@@ -640,11 +640,11 @@ for ep in tqdm(range(epochs)):
             yy = yy.to(device)
             hidden = torch.zeros(xx.shape[0],grid_size_x, grid_size_y, hidden_size-2).to(device)
 
-        for tt in range(t_sets):
-            x = xx[:,tt]
-            y = yy[:,tt]
-            out, hidden = model(x, hidden)       
-            loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
+            for tt in range(t_sets):
+                x = xx[:,tt]
+                y = yy[:,tt]
+                out, hidden = model(x, hidden)       
+                loss += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
         
         test_l2 += loss.item()
 
