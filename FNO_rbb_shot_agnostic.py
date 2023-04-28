@@ -16,16 +16,16 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Scheduler Step": 100,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GELU',
-                 "Normalisation Strategy": 'Min-Max',
+                 "Normalisation Strategy": 'Range',
                  "Instance Norm": 'No', #Layerwise Normalisation
                  "Log Normalisation":  'No',
                  "Physics Normalisation": 'No', #Normalising the Variable 
                  "T_in": 10, #Input time steps
-                 "T_out": 60, #Max simulation time
+                 "T_out": 80, #Max simulation time
                  "Step": 10, #Time steps output in each forward call
                  "Modes":16, #Number of Fourier Modes
                  "Width": 16, #Features of the Convolutional Kernel
-                 "Loss Function": 'MSE', #Choice of Loss Fucnction
+                 "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
                  "Resolution":1
                  }
 
@@ -413,7 +413,7 @@ class FNO2d(nn.Module):
 #Using x and y values from the simulation discretisation 
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-        gridx = gridx = torch.tensor(x_grid, dtype=torch.float)
+        gridx = torch.tensor(x_grid, dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
         gridy = torch.tensor(y_grid, dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
@@ -608,7 +608,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
 
 myloss = LpLoss(size_average=False)
-myloss = nn.MSELoss()
+# myloss = nn.MSELoss()
 
 epochs = configuration['Epochs']
 if torch.cuda.is_available():

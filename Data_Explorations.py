@@ -126,9 +126,9 @@ rbb_normal_idx = [5, 30, 34, 48, 52]
 # %%
 #Exploring the RBA Dataset 
 
-data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
-# data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
+# data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
+data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
+data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
 # data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
 u_sol = data.astype(np.float32)
@@ -151,5 +151,5 @@ for ii in range(len(u)):
     plot(u, ii)
 # %%
 rba_1_idx = [25, 40]
-
+rba_2_idx = [20]
 #Also start the training from the first 5 onwards. 

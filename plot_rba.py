@@ -180,11 +180,14 @@ class RangeNormalizer(object):
 class MinMax_Normalizer(object):
     def __init__(self, x, low=-1.0, high=1.0):
         super(MinMax_Normalizer, self).__init__()
-        mymin = torch.min(x)
-        mymax = torch.max(x)
+        # mymin = torch.min(x)
+        # mymax = torch.max(x)
 
-        self.a = (high - low)/(mymax - mymin)
-        self.b = -self.a*mymax + high
+        # self.a = (high - low)/(mymax - mymin)
+        # self.b = -self.a*mymax + high
+
+        self.a = torch.Tensor(0.0037)
+        self.b = torch.Tensor(-1.)
 
     def encode(self, x):
         s = x.size()
@@ -467,6 +470,8 @@ u = u[...,5:]
 
 ntrain = 49
 ntest = 8
+
+
 batch_size_test = ntest 
 
 
@@ -553,9 +558,8 @@ if norm_strategy == 'Gaussian':
     y_normalizer = GaussianNormalizer(train_u)
 
 
-
-train_a = a_normalizer.encode(train_a)
-test_a = a_normalizer.encode(test_a)
+# train_a = a_normalizer.encode(train_a)
+# test_a = a_normalizer.encode(test_a)
 
 train_u = y_normalizer.encode(train_u)
 test_u_encoded = y_normalizer.encode(test_u)
@@ -579,9 +583,7 @@ gridy = torch.tensor(gridy, dtype=torch.float)
 gridx = gridx.reshape(1, S_x, S_y, 1)
 gridy = gridy.reshape(1, S_x, S_y, 1)
 
-
-
-train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
+# train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_encoded), batch_size=batch_size_test, shuffle=False)
 
 t2 = default_timer()

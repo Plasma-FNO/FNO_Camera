@@ -19,7 +19,7 @@ configuration = {"Case": 'RBA Camera',
                  "Batch Size": 50,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
-                 "Scheduler Step": 50,
+                 "Scheduler Step": 100,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
@@ -30,7 +30,9 @@ configuration = {"Case": 'RBA Camera',
                  "Width": 16,
                  "Variables": 1,
                  "Resolution":1, 
-                 "Noise":0.0}
+                 "Noise":0.0,
+                 "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
+}
 
 # %% 
 from simvue import Run
@@ -260,10 +262,27 @@ class LpLoss(object):
     def __call__(self, x, y):
         return self.rel(x, y)
 
-
-
 # %%
 
+# #Adding Gaussian Noise to the training dataset
+# class AddGaussianNoise(object):
+#     def __init__(self, mean=0., std=1.):
+#         self.mean = torch.FloatTensor([mean])
+#         self.std = torch.FloatTensor([std])
+        
+#     def __call__(self, tensor):
+#         return tensor + torch.randn(tensor.size()).cuda() * self.std + self.mean
+    
+#     def __repr__(self):
+#         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+#     def cuda(self):
+#         self.mean = self.mean.cuda()
+#         self.std = self.std.cuda()
+#     def cpu(self):
+#         self.mean = self.mean.cpu()
+#         self.std = self.std.cpu()
+# # additive_noise = AddGaussianNoise(0.0, configuration['Noise'])
+# additive_noise.cuda()
 
 ################################################################
 # fourier layer
@@ -339,13 +358,7 @@ class FNO2d(nn.Module):
         self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv5 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        
-        # self.mlp0 = MLP(self.width, self.width, self.width)
-        # self.mlp1 = MLP(self.width, self.width, self.width)
-        # self.mlp2 = MLP(self.width, self.width, self.width)
-        # self.mlp3 = MLP(self.width, self.width, self.width)
-        # self.mlp4 = MLP(self.width, self.width, self.width)
-        # self.mlp5 = MLP(self.width, self.width, self.width)
+
 
         self.w0 = nn.Conv2d(self.width, self.width, 1)
         self.w1 = nn.Conv2d(self.width, self.width, 1)
@@ -368,35 +381,29 @@ class FNO2d(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         x1 = self.norm(self.conv0(self.norm(x)))
-        # x1 = self.mlp0(x1)
         x2 = self.w0(x)
         x = x1+x2
         x = F.gelu(x)
 
         x1 = self.norm(self.conv1(self.norm(x)))
-        # x1 = self.mlp1(x1)    
         x2 = self.w1(x)
         x = x1+x2
         x = F.gelu(x)
 
         x1 = self.norm(self.conv2(self.norm(x)))
-        # x1 = self.mlp2(x1)
         x2 = self.w2(x)
         x = x1+x2
         x = F.gelu(x)
 
         x1 = self.norm(self.conv3(self.norm(x)))
-        # x1 = self.mlp3(x1)
         x2 = self.w3(x)
         x = x1+x2
 
         x1 = self.norm(self.conv4(self.norm(x)))
-        # x1 = self.mlp4(x1)
         x2 = self.w4(x)
         x = x1+x2
 
         x1 = self.norm(self.conv5(self.norm(x)))
-        # x1 = self.mlp5(x1)
         x2 = self.w5(x)
         x = x1+x2
 
@@ -440,7 +447,7 @@ class FNO2d(nn.Module):
 # %%
 
 data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-# data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
+data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
 # data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
 # data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
 
@@ -451,8 +458,11 @@ u_sol = data.astype(np.float32)[:,:,::res, ::res]
 rba_exclude = [25, 40]
 u_sol = np.delete(u_sol, rba_exclude, axis=0)
 
-# u_2_sol = data_2.astype(np.float32)[:,:,::res,::res]
-# u_sol = np.vstack((u_sol, u_2_sol))
+u_sol_2 = data_2.astype(np.float32)[:,:,::res,::res]
+rba_exclude_2 = [20]
+u_sol_2 = np.delete(u_sol_2, rba_exclude_2, axis=0)
+
+u_sol = np.vstack((u_sol, u_sol_2))
 
 np.random.shuffle(u_sol)
 
@@ -463,14 +473,10 @@ grid_size_y = u_sol.shape[3]
 
 u = torch.from_numpy(u_sol)
 u = u.permute(0, 2, 3, 1)
-u = u[...,5:][:4]
+u = u[...,5:]
 
-ntrain = 49
-ntest = 8
-
-ntrain = 2
-ntest = 2
-
+ntrain = 70
+ntest = 13
 batch_size_test = ntest 
 
 
@@ -611,7 +617,8 @@ model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
 
-myloss = nn.MSELoss()
+myloss = LpLoss(size_average=False)
+# myloss = nn.MSELoss()
     
 # %%
 epochs = configuration['Epochs']
