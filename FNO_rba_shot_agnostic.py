@@ -24,8 +24,8 @@ configuration = {"Case": 'RBA Camera',
                  "Activation": 'GeLU',
                  "Normalisation Strategy": 'Min-Max',
                  "T_in": 10, 
-                 "T_out": 60,
-                 "Step": 10,
+                 "T_out": 80,
+                 "Step": 20,
                  "Modes":16,
                  "Width": 16,
                  "Variables": 1,
@@ -37,7 +37,7 @@ configuration = {"Case": 'RBA Camera',
 # %% 
 from simvue import Run
 run = Run()
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rba', 'Forecasting', 'shot-agnostic'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rba', 'Forecasting', 'shot-agnostic', 'both rbb'], metadata=configuration)
 
 
 # %%

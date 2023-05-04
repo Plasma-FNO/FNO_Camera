@@ -22,7 +22,7 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Physics Normalisation": 'No', #Normalising the Variable 
                  "T_in": 10, #Input time steps
                  "T_out": 80, #Max simulation time
-                 "Step": 10, #Time steps output in each forward call
+                 "Step": 20, #Time steps output in each forward call
                  "Modes":16, #Number of Fourier Modes
                  "Width": 16, #Features of the Convolutional Kernel
                  "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
