@@ -466,6 +466,10 @@ u_sol = np.vstack((u_sol, u_sol_2))
 
 np.random.shuffle(u_sol)
 
+
+del data
+del data_2
+
 # %%
 
 grid_size_x = u_sol.shape[2]
