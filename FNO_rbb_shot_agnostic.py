@@ -16,13 +16,13 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Scheduler Step": 100,
                  "Scheduler Gamma": 0.5,
                  "Activation": 'GELU',
-                 "Normalisation Strategy": 'Range',
+                 "Normalisation Strategy": 'Min-Max',
                  "Instance Norm": 'No', #Layerwise Normalisation
                  "Log Normalisation":  'No',
                  "Physics Normalisation": 'No', #Normalising the Variable 
                  "T_in": 10, #Input time steps
-                 "T_out": 80, #Max simulation time
-                 "Step": 20, #Time steps output in each forward call
+                 "T_out": 60, #Max simulation time
+                 "Step": 10, #Time steps output in each forward call
                  "Modes":16, #Number of Fourier Modes
                  "Width": 16, #Features of the Convolutional Kernel
                  "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
@@ -33,7 +33,7 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
 #Simvue Setup. If not using comment out this section and anything with run
 from simvue import Run
 run = Run(mode='online')
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-agnostic'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-agnostic', 'arbitrary-grids'], metadata=configuration)
 
 
 # %%
@@ -179,11 +179,13 @@ class RangeNormalizer(object):
 class MinMax_Normalizer(object):
     def __init__(self, x, low=-1.0, high=1.0):
         super(MinMax_Normalizer, self).__init__()
-        mymin = torch.min(x)
-        mymax = torch.max(x)
+        # self.mymin = torch.min(x)
+        # self.mymax = torch.max(x)
+        self.mymin = torch.tensor(0.0)
+        self.mymax =torch.tensor(255.0)
 
-        self.a = (high - low)/(mymax - mymin)
-        self.b = -self.a*mymax + high
+        self.a = (high - low)/(self.mymax - self.mymin)
+        self.b = -self.a*self.mymax + high
 
     def encode(self, x):
         s = x.size()
@@ -411,22 +413,22 @@ class FNO2d(nn.Module):
         return x
 
 #Using x and y values from the simulation discretisation 
-    def get_grid(self, shape, device):
-        batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-        gridx = torch.tensor(x_grid, dtype=torch.float)
-        gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-        gridy = torch.tensor(y_grid, dtype=torch.float)
-        gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
-        return torch.cat((gridx, gridy), dim=-1).to(device)
-
-## Arbitrary grid discretisation 
     # def get_grid(self, shape, device):
     #     batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-    #     gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+    #     gridx = torch.tensor(x_grid, dtype=torch.float)
     #     gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-    #     gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+    #     gridy = torch.tensor(y_grid, dtype=torch.float)
     #     gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
     #     return torch.cat((gridx, gridy), dim=-1).to(device)
+
+# Arbitrary grid discretisation 
+    def get_grid(self, shape, device):
+        batchsize, size_x, size_y = shape[0], shape[1], shape[2]
+        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
+        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+        return torch.cat((gridx, gridy), dim=-1).to(device)
 
     def count_params(self):
         c = 0
@@ -454,8 +456,6 @@ elif configuration['Case'] == 'RBB Camera - Moved':
 
     data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rbb_29920_29970.npy')
     data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rbb_rz_pos_29920_29970.npz')
-
-
 
 # %%
 res = configuration['Resolution']
@@ -655,8 +655,8 @@ for ep in range(epochs): #Training Loop - Epochwise
 
     print('Epochs: %d, Time: %.2f, Train Loss: %.3e, Test Loss: %.3e' % (ep, t2 - t1, train_loss, test_loss))
 
-    run.log_metrics({'Train Loss': train_loss, 
-                   'Test Loss': test_loss})
+    run.log_metrics({'Train Loss': train_loss.item(), 
+                   'Test Loss': test_loss.item()})
 
 train_time = time.time() - start_time
 # %%

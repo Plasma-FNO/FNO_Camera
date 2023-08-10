@@ -1,48 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Thu July 13 2022
-
-
+Created on 6 Jan 2023
 @author: vgopakum
-
-FNO 2d time on RBA Camera Data. Data Pipeline is reconstructed to be fed
-in a shot-agnostic sequential manner in line with a Recurrent model
-
+FNO modelled over Camera data = rbb camera looking at the central solenoid
 """
-
 # %%
-configuration = {"Case": 'RBA Camera',
-                 "Pipeline": 'Sequential',
-                 "Calibration": 'Calcam',
-                 "Epochs": 500,
+configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
+                 "Pipeline": 'Sequential', #Shot-Agnostic RNN windowed data pipeline. 
+                 "Calibration": 'Calcam', #CAD inspired Geometry setup
+                 "Epochs": 250, 
                  "Batch Size": 20,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 100,
                  "Scheduler Gamma": 0.5,
-                 "Activation": 'GeLU',
+                 "Activation": 'GELU',
                  "Normalisation Strategy": 'Min-Max',
-                 "T_in": 10, 
-                 "T_out": 60,
-                 "Step": 10,
-                 "Modes":16,
-                 "Width": 16,
-                 "Variables": 1,
-                 "Resolution":1, 
-                 "Noise":0.0,
+                 "Instance Norm": 'No', #Layerwise Normalisation
+                 "Log Normalisation":  'No',
+                 "Physics Normalisation": 'No', #Normalising the Variable 
+                 "T_in": 10, #Input time steps
+                 "T_out": 'All', #Max simulation time
+                 "Step": 10, #Time steps output in each forward call
+                 "Modes":8, #Number of Fourier Modes
+                 "Width": 16, #Features of the Convolutional Kernel
                  "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
-}
+                 "Resolution":1
+                 }
 
-# %% 
+## %% 
+#Simvue Setup. If not using comment out this section and anything with run
 from simvue import Run
-run = Run()
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rba', 'Forecasting', 'shot-agnostic', 'arbitrary-grids'], metadata=configuration)
+run = Run(mode='online')
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-agnostic', 'discretisation-invariant', 'Full Length'], metadata=configuration)
 
 # %%
-
+#Importing the necessary packages. 
 import numpy as np
 from tqdm import tqdm 
+import h5py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -59,14 +56,15 @@ from timeit import default_timer
 from tqdm import tqdm 
 
 torch.manual_seed(0)
-np.random.seed(0)
+np.random.seed(0) 
 
 # %% 
 #Setting up the directories - data location, model location and plots. 
 import os 
-path = file_loc = os.getcwd()
-data_loc = os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd())))
-model_loc = os.getcwd()
+path = os.getcwd()
+data_loc = '/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Data/Cam_Data/rbb_30255_30431'
+# model_loc = os.path.dirname(os.path.dirname(os.getcwd()))
+file_loc = os.getcwd()
 
 
 # %%
@@ -76,116 +74,20 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # %%
 ##################################
-#Normalisation Functions 
+#Normalisation Functions
 ##################################
 
-
-# normalization, pointwise gaussian
-class UnitGaussianNormalizer(object):
-    def __init__(self, x, eps=0.00001):
-        super(UnitGaussianNormalizer, self).__init__()
-
-        # x could be in shape of ntrain*n or ntrain*T*n or ntrain*n*T
-        self.mean = torch.mean(x, 0)
-        self.std = torch.std(x, 0)
-        self.eps = eps
-
-    def encode(self, x):
-        x = (x - self.mean) / (self.std + self.eps)
-        return x
-
-    def decode(self, x, sample_idx=None):
-        if sample_idx is None:
-            std = self.std + self.eps # n
-            mean = self.mean
-        else:
-            if len(self.mean.shape) == len(sample_idx[0].shape):
-                std = self.std[sample_idx] + self.eps  # batch*n
-                mean = self.mean[sample_idx]
-            if len(self.mean.shape) > len(sample_idx[0].shape):
-                std = self.std[:,sample_idx]+ self.eps # T*batch*n
-                mean = self.mean[:,sample_idx]
-
-        # x is in shape of batch*n or T*batch*n
-        x = (x * std) + mean
-        return x
-
-    def cuda(self):
-        self.mean = self.mean.cuda()
-        self.std = self.std.cuda()
-
-    def cpu(self):
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-
-# normalization, Gaussian - across the entire dataset
-class GaussianNormalizer(object):
-    def __init__(self, x, eps=0.00001):
-        super(GaussianNormalizer, self).__init__()
-
-        self.mean = torch.mean(x)
-        self.std = torch.std(x)
-        self.eps = eps
-
-    def encode(self, x):
-        x = (x - self.mean) / (self.std + self.eps)
-        return x
-
-    def decode(self, x, sample_idx=None):
-        x = (x * (self.std + self.eps)) + self.mean
-        return x
-
-    def cuda(self):
-        self.mean = self.mean.cuda()
-        self.std = self.std.cuda()
-
-    def cpu(self):
-        self.mean = self.mean.cpu()
-        self.std = self.std.cpu()
-
-
-# normalization, scaling by range - pointwise
-class RangeNormalizer(object):
-    def __init__(self, x, low=-1.0, high=1.0):
-        super(RangeNormalizer, self).__init__()
-        mymin = torch.min(x, 0)[0].view(-1)
-        mymax = torch.max(x, 0)[0].view(-1)
-
-        self.a = (high - low)/(mymax - mymin)
-        self.b = -self.a*mymax + high
-
-    def encode(self, x):
-        s = x.size()
-        x = x.reshape(s[0], -1)
-        x = self.a*x + self.b
-        x = x.view(s)
-        return x
-
-    def decode(self, x):
-        s = x.size()
-        x = x.reshape(s[0], -1)
-        x = (x - self.b)/self.a
-        x = x.view(s)
-        return x
-
-
-    def cuda(self):
-        self.a = self.a.cuda()
-        self.b = self.b.cuda()
-
-    def cpu(self):
-        self.a = self.a.cpu()
-        self.b = self.b.cpu()
-
-#normalization, rangewise but across the full domain 
+#normalization, rangewise but across the full domain by the max and minimum of the camera image. 
 class MinMax_Normalizer(object):
-    def __init__(self, x, low=-1.0, high=1.0):
+    def __init__(self, low=-1.0, high=1.0):
         super(MinMax_Normalizer, self).__init__()
-        mymin = torch.min(x)
-        mymax = torch.max(x)
+        # self.mymin = torch.min(x)
+        # self.mymax = torch.max(x)
+        self.mymin = torch.tensor(0.0)
+        self.mymax =torch.tensor(255.0)
 
-        self.a = (high - low)/(mymax - mymin)
-        self.b = -self.a*mymax + high
+        self.a = (high - low)/(self.mymax - self.mymin)
+        self.b = -self.a*self.mymax + high
 
     def encode(self, x):
         s = x.size()
@@ -212,7 +114,7 @@ class MinMax_Normalizer(object):
 
 # %%
 ##################################
-# Loss Functions
+# Loss Functionss
 ##################################
 
 #loss function with rel/abs Lp loss
@@ -262,29 +164,8 @@ class LpLoss(object):
         return self.rel(x, y)
 
 # %%
-
-# #Adding Gaussian Noise to the training dataset
-# class AddGaussianNoise(object):
-#     def __init__(self, mean=0., std=1.):
-#         self.mean = torch.FloatTensor([mean])
-#         self.std = torch.FloatTensor([std])
-        
-#     def __call__(self, tensor):
-#         return tensor + torch.randn(tensor.size()).cuda() * self.std + self.mean
-    
-#     def __repr__(self):
-#         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
-#     def cuda(self):
-#         self.mean = self.mean.cuda()
-#         self.std = self.std.cuda()
-#     def cpu(self):
-#         self.mean = self.mean.cpu()
-#         self.std = self.std.cpu()
-# # additive_noise = AddGaussianNoise(0.0, configuration['Noise'])
-# additive_noise.cuda()
-
 ################################################################
-# fourier layer
+# fourier layer - Setting up the spectral convoltions
 ################################################################
 
 class SpectralConv2d(nn.Module):
@@ -326,7 +207,6 @@ class SpectralConv2d(nn.Module):
         x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
         return x
 
-# %%
 
 class FNO2d(nn.Module):
     def __init__(self, modes1, modes2, width):
@@ -412,23 +292,23 @@ class FNO2d(nn.Module):
         x = self.fc2(x)
         return x
 
-#Using x and y values from the simulation discretisation 
-    # def get_grid(self, shape, device):
-    #     batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-    #     gridx = torch.tensor(x_grid, dtype=torch.float)
-    #     gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-    #     gridy = torch.tensor(y_grid, dtype=torch.float)
-    #     gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
-    #     return torch.cat((gridx, gridy), dim=-1).to(device)
-
-# Arbitrary grid discretisation 
+#Using x and y values discretised along the view of the camera. 
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(-1.5, 1.5, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(-2.0, 2.0, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         return torch.cat((gridx, gridy), dim=-1).to(device)
+
+# # Arbitrary grid discretisation 
+#     def get_grid(self, shape, device):
+#         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
+#         gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+#         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
+#         gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+#         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+#         return torch.cat((gridx, gridy), dim=-1).to(device)
 
     def count_params(self):
         c = 0
@@ -443,247 +323,189 @@ class FNO2d(nn.Module):
 # Loading Data 
 ################################################################
 
+#  30255 - 30431 : Initial RBB Camera Data
+
+# %% 
+#Function that takes in shot numbers, retreives the camera data within that, 
+#chunks it into time windows, converts to a tensor and permutes to FNO friendly shapes. 
+
+def time_windowing(shots):
+    u1 = [] #input a
+    u2 = [] #output u
+    for ii in shots:
+        data = h5py.File(data_loc + '/'+'rbb'+str(ii)+'.h5', 'r')
+        data_length = int((len(data.keys()) - 3)/2)
+        temp_cam_data = []
+        for jj in range(data_length):
+            if jj<10:
+                temp_cam_data.append(np.asarray(data['frame000'+str(jj)]))
+            if jj>=10 and jj < 100:
+                temp_cam_data.append(np.asarray(data['frame00' + str(jj)]))
+            if jj >= 100:
+                temp_cam_data.append(np.asarray(data['frame0' + str(jj)]))
+        
+        temp_cam_data = np.asarray(temp_cam_data[5:]) #Removes the first 5 frames. 
+        for ff in tqdm(range(len(temp_cam_data) - T_in - step)):
+            u1.append(temp_cam_data[ff:ff+input_size, :, :])
+            u2.append(temp_cam_data[ff+input_size:ff+input_size+step, :, :])
+    u1 = torch.tensor(np.asarray(u1)).permute(0, 2, 3, 1)
+    u2 = torch.tensor(np.asarray(u2)).permute(0, 2, 3, 1)
+    del temp_cam_data, data
+    return u1, u2
+    
+
+T_in = input_size = configuration['T_in']
+T = T_out = configuration['T_out']
+step = output_size = configuration['Step']
+
+shots = np.load(data_loc + '/shots_100frames.npy')
+# shots = np.sort(shots)
 # %%
-
-data =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/rba_30280_30360.npy')
-data_2 = np.load(data_loc + '/Data/Cam_Data/rba_fno_data_2.npy')
-# data =  np.load(data_loc + '/Data/Cam_Data/rba_data_608x768.npy')
-# data_calib =  np.load(data_loc + '/Data/Cam_Data/Cleaned_Data/Calibrations/rba_rz_pos_30280_30360.npz')
-
-res = configuration['Resolution']
-# gridx = data_calib['r_pos'][::res, ::res]
-# gridy = data_calib['z_pos'][::res, ::res]
-u_sol = data.astype(np.float32)[:,:,::res, ::res]
-rba_exclude = [25, 40]
-u_sol = np.delete(u_sol, rba_exclude, axis=0)
-
-u_sol_2 = data_2.astype(np.float32)[:,:,::res,::res]
-rba_exclude_2 = [20]
-u_sol_2 = np.delete(u_sol_2, rba_exclude_2, axis=0)
-
-u_sol = np.vstack((u_sol, u_sol_2))
-
-np.random.shuffle(u_sol)
-
-
-del data
-del data_2
-
-# %%
-
-grid_size_x = u_sol.shape[2]
-grid_size_y = u_sol.shape[3]
-
-u = torch.from_numpy(u_sol)
-u = u.permute(0, 2, 3, 1)
-u = u[...,5:]
-
-ntrain = 70
-ntest = 13
-batch_size_test = ntest 
-
-
-S_x = grid_size_x #Grid Size
-S_y = grid_size_y #Grid Size
-
 #Extracting hyperparameters from the config dict
-
 modes = configuration['Modes']
 width = configuration['Width']
 output_size = configuration['Step']
-
 batch_size = configuration['Batch Size']
-batch_size2 = batch_size
-
+res = configuration['Resolution']
 
 t1 = default_timer()
 
 
-T_in = input_size = configuration['T_in']
-T = configuration['T_out']
-T_out = T
-step = output_size = configuration['Step']
-
-modes = configuration['Modes']
-width = configuration['Width']
-
-batch_size = configuration['Batch Size']
-batch_size2 = batch_size
-batch_size_test = ntest 
 # %%
-
-################################################################
-# Sort Data into test/train sets -- Sequential - Ignorant of shots but only sequences
-################################################################
-
-
-t_sets = T_in + T_out - input_size - output_size
-
-u1 = []
-u2 = []
-for ii in tqdm(range(len(u))):
-    for jj in range(t_sets):
-        u1.append(u[ii, :, :, jj:jj+input_size])
-        u2.append(u[ii, :, :, jj+input_size:jj+input_size+step])
-    
-# u1 = np.asarray(u1)
-# u2 = np.asarray(u2)
-
-u1 = torch.stack(u1)
-u2 = torch.stack(u2)
-
-ntrain = int(ntrain*t_sets)
-ntest = len(u1) - ntrain
-
-
-t1 = default_timer()
-
-train_a = u1[:ntrain]
-train_u = u2[:ntrain]
-
-test_a = u1[-ntest:]
-test_u = u2[-ntest:]
-
-print(train_u.shape)
-print(test_u.shape)
-
-# %%
-
 #Normalising the train and test datasets with the preferred normalisation. 
 
 norm_strategy = configuration['Normalisation Strategy']
 
 if norm_strategy == 'Min-Max':
-    a_normalizer = MinMax_Normalizer(train_a)
-    y_normalizer = MinMax_Normalizer(train_u)
+    normalizer = MinMax_Normalizer()
 
-if norm_strategy == 'Range':
-    a_normalizer = RangeNormalizer(train_a)
-    y_normalizer = RangeNormalizer(train_u)
+# if norm_strategy == 'Range':
+#     a_normalizer = RangeNormalizer(train_a)
+#     y_normalizer = RangeNormalizer(train_u)
 
-if norm_strategy == 'Gaussian':
-    a_normalizer = GaussianNormalizer(train_a)
-    y_normalizer = GaussianNormalizer(train_u)
+# if norm_strategy == 'Gaussian':
+#     a_normalizer = GaussianNormalizer(train_a)
+#     y_normalizer = GaussianNormalizer(train_u)
 
-
-
-train_a = a_normalizer.encode(train_a)
-test_a = a_normalizer.encode(test_a)
-
-train_u = y_normalizer.encode(train_u)
-test_u_encoded = y_normalizer.encode(test_u)
 
 # %%
+#Training data is prepared mid training. 50 shots are selected for testing over which we perform time windowing and terate over in 5 groups of 10. 
+#Preparing the Testing data - the last 5 shots from the curated list
+test_shots = shots[-5:]
+test_a, test_u = time_windowing(test_shots)
+test_a = normalizer.encode(test_a)
+test_u_encoded = normalizer.encode(test_u)
+ntest = len(test_a)
 
-#Using arbitrary R and Z positions sampled uniformly within a specified domain range. 
-x_grid = np.linspace(-1.0, -2.0, 400)[::res]
-# x = np.linspace(-1.0, -2.0, 608)[::res]
-gridx = torch.tensor(x_grid, dtype=torch.float)
-gridx = gridx.reshape(1, S_x, 1, 1).repeat([1, 1, S_y, 1])
-
-y_grid = np.linspace(0.0, 1.0, 512)[::res]
-# y = np.linspace(-1.0, 0.0, 768)[::res]
-gridy = torch.tensor(y_grid, dtype=torch.float)
-gridy = gridy.reshape(1, 1, S_y, 1).repeat([1, S_x, 1, 1])
-
-#Using the calibrated R and Z positions averaged over the time and shots. 
-gridx = torch.tensor(gridx, dtype=torch.float)
-gridy = torch.tensor(gridy, dtype=torch.float)
-gridx = gridx.reshape(1, S_x, S_y, 1)
-gridy = gridy.reshape(1, S_x, S_y, 1)
-
-
-
-train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
-test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_encoded), batch_size=batch_size_test, shuffle=False)
-
-t2 = default_timer()
-print('preprocessing finished, time used:', t2-t1)
+test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u_encoded), batch_size=batch_size, shuffle=True)
 
 # %%
-
-################################################################
-# training and evaluation
-################################################################
-
+#Instantiating the Model. 
 model = FNO2d(modes, modes, width)
-# model.load_state_dict(torch.load(file_loc + '/Models/FNO_rbb_lazy-barbette.pth', map_location=torch.device('cpu')))
-run.update_metadata({'Number of Params': int(model.count_params())})
-print("Number of model params : " + str(model.count_params()))
-
+# model = model.double()
 # model = nn.DataParallel(model, device_ids = [0,1])
 model.to(device)
 
-# wandb.watch(model, log='all')
+run.update_metadata({'Number of Params': int(model.count_params())})
+print("Number of model params : " + str(model.count_params()))
+
 
 #Setting up the optimisation schedule. 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
 
+
+#Loading from Checkpoint 
+
+checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_fundamental-vocoder.pth')
+model.load_state_dict(checkpoint['model_state_dict'])
+optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+epoch = checkpoint['epoch']
+loss = checkpoint['loss']
+
 myloss = LpLoss(size_average=False)
 # myloss = nn.MSELoss()
-    
-# %%
-epochs = configuration['Epochs']
-if torch.cuda.is_available():
-    y_normalizer.cuda()
 
-# %%
-#Training Loop
-#Sequential 
+epochs = configuration['Epochs']
+
+# if torch.cuda.is_available():
+    # normalizer.cuda()
+
+#Model save location
+model_loc = file_loc + '/Models/FNO_rbb_' + run.name + '.pth'
+
+# %% 
+################################################################
+# training and evaluation
+################################################################
 
 start_time = time.time()
-for ep in tqdm(range(epochs)):
+for ep in range(epochs): #Training Loop - Epochwise
     model.train()
-    train_l2 = 0 
-    test_l2 = 0
-    t1 = default_timer()
-    for xx, yy in train_loader:
-        optimizer.zero_grad()
-        
-        xx = xx.to(device)
-        yy = yy.to(device)
-        
-        out = model(xx)
-        
-        loss = myloss(out, yy)
-        train_l2 += loss
+    ntrain=0
+    for ii in range(0, 50, 10): #Training Loop - Batching the DataLoader itself. 
+        train_shots = shots[ii:ii+10]
+        train_a, train_u = time_windowing(train_shots)
+        train_a = normalizer.encode(train_a)
+        train_u = normalizer.encode(train_u) 
+        ntrain += len(train_a)
+        train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
+        t1 = default_timer()
+        train_l2= 0
+        test_l2 = 0
 
-        loss.backward()
-        optimizer.step()
-
-    with torch.no_grad():
-        for xx, yy in test_loader:
-            loss = 0
+        for xx, yy in train_loader: #Training Loop - Batchwise
+            optimizer.zero_grad()
             xx = xx.to(device)
             yy = yy.to(device)
 
-            pred = model(xx)
-            loss = myloss(pred, yy)
-            test_l2 += loss.item()
+            out = model(xx)        
+            loss = myloss(out.reshape(batch_size, -1), yy.reshape(batch_size, -1)) 
+            train_l2 += loss
+            loss.backward()
+            optimizer.step()
 
+    #Validation Loop
+        with torch.no_grad():
+            for xx, yy in test_loader:
+                loss = 0
+                xx = xx.to(device)
+                yy = yy.to(device)
 
-    t2 = default_timer()
+                pred = model(xx)
+                loss = myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1)) 
+                test_l2 += loss
+        t2 = default_timer()
     scheduler.step()
     train_loss = train_l2 / ntrain
     test_loss = test_l2 / ntest
-    
-    print('Epochs: %d, Time: %.2f, Train Loss: %.3e, Test Loss: %.3e' % (ep, t2 - t1, train_loss, test_loss))
-    
-    
-    run.log_metrics({'Train Loss': train_loss, 
-                'Test Loss': test_loss})
-    
-train_time = time.time() - start_time 
 
+    train_loss = train_l2 / ntrain
+    test_loss = test_l2 / ntest
+
+    del train_a, train_u, train_loader #Clearing out Memory
+
+    run.log_metrics({'Train Loss': train_loss.item(), #Logging the learning curve
+                   'Test Loss': test_loss.item()})
+
+    #Checkpointing 
+
+    if ep%1 == 0:
+        torch.save({
+                'epoch': ep,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': train_loss,
+                }, model_loc)
+
+
+train_time = time.time() - start_time
 # %%
 #Saving the Model
-model_loc = file_loc + '/Models/FNO_rba_' + run.name + '.pth'
-torch.save(model.state_dict(),  model_loc)
+# torch.save(model.state_dict(),  model_loc)
 
-       
 # %%
-#Testing - Sequential
+#Testing 
 batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
 
@@ -692,31 +514,31 @@ index = 0
 
 with torch.no_grad():
     for xx, yy in tqdm(test_loader):
-        
+                
         xx = xx.to(device)
         yy = yy.to(device)
-        
+
         pred = model(xx)
         pred_set[index]=pred
         index += 1
     
 test_l2 = (pred_set - test_u_encoded).pow(2).mean()
 print('Testing Error: %.3e' % (test_l2))
-
-
-#Logging Metrics 
-
+    
+# %%
 run.update_metadata({'Training Time': float(train_time),
                      'MSE Test Error': float(test_l2)
                     })
-
-pred_set = y_normalizer.decode(pred_set.to(device)).cpu()
+#De-normalising the values
+pred_set = normalizer.decode(pred_set.to(device)).cpu()
       
 # %%
-#Plotting the comparison plots
+#Plotting the comparison plots -- Selecting a single shot and then a random 10 time instance length from the time window'd portion of that shot. 
+test_shot_lens = [224, 171, 198, 145, 140]
+shot_idx = np.random.randint(0,5) #Selecting a random shot from the test range. 
+# idx = 6
 
-idx = np.random.randint(0,ntest) 
-# idx = 53
+idx = int(np.sum(test_shot_lens[:shot_idx]) + np.random.randint(0,test_shot_lens[shot_idx]))
 
 u_field = test_u[idx]
 
@@ -733,7 +555,7 @@ fig = plt.figure(figsize=plt.figaspect(0.5))
 ax = fig.add_subplot(2,3,1)
 pcm =ax.imshow(u_field[:,:,0], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_1, vmax=v_max_1)
 # ax.title.set_text('Initial')
-ax.title.set_text('t='+ str(T_in))
+ax.title.set_text('t='+ str(round(1.2*(idx+0), 1) + 18)+'ms')
 ax.set_ylabel('Solution')
 fig.colorbar(pcm, pad=0.05)
 
@@ -741,7 +563,7 @@ fig.colorbar(pcm, pad=0.05)
 ax = fig.add_subplot(2,3,2)
 pcm = ax.imshow(u_field[:,:,int(step/2)], cmap=cm.coolwarm, extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_2, vmax=v_max_2)
 # ax.title.set_text('Middle')
-ax.title.set_text('t='+ str(int((T+T_in)/2)))
+ax.title.set_text('t='+ str(round(1.2*(idx+5), 1) + 18)+'ms')
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
@@ -750,7 +572,7 @@ fig.colorbar(pcm, pad=0.05)
 ax = fig.add_subplot(2,3,3)
 pcm = ax.imshow(u_field[:,:,-1], cmap=cm.coolwarm,  extent=[9.5, 10.5, -0.5, 0.5], vmin=v_min_3, vmax=v_max_3)
 # ax.title.set_text('Final')
-ax.title.set_text('t='+str(T+T_in))
+ax.title.set_text('t='+ str(round(1.2*(idx+10), 1) + 18)+'ms')
 ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
@@ -777,13 +599,12 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
+output_plot = file_loc + '/Plots/rbb_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
-#Simvue Artifact storage
 
-CODE = ['FNO_rba_shot_agnostic.py']
+CODE = ['FNO_rbb_full_shots.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
@@ -817,4 +638,3 @@ for output_file in OUTPUTS:
         print('ERROR: output file %s does not exist' % output_file)
 
 run.close()
-
