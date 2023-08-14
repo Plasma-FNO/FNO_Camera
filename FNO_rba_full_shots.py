@@ -3,7 +3,7 @@
 """
 Created on 6 Jan 2023
 @author: vgopakum
-FNO modelled over Camera data = rbb camera looking at the central solenoid
+FNO modelled over Camera data = rba camera looking at the divertor
 """
 # %%
 configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
@@ -33,7 +33,7 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
 #Simvue Setup. If not using comment out this section and anything with run
 from simvue import Run
 run = Run(mode='online')
-run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rbb', 'Forecasting', 'shot-agnostic', 'discretisation-invariant', 'Full Length'], metadata=configuration)
+run.init(folder="/FNO_Camera", tags=['FNO', 'Camera', 'rba', 'Forecasting', 'shot-agnostic', 'discretisation-invariant', 'Full Length'], metadata=configuration)
 
 # %%
 #Importing the necessary packages. 
@@ -62,7 +62,7 @@ np.random.seed(0)
 #Setting up the directories - data location, model location and plots. 
 import os 
 path = os.getcwd()
-data_loc = '/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Data/Cam_Data/rbb_30255_30431'
+data_loc = '/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Data/Cam_Data/rba_30250_30431'
 # model_loc = os.path.dirname(os.path.dirname(os.getcwd()))
 file_loc = os.getcwd()
 
@@ -332,7 +332,7 @@ def time_windowing(shots):
     u1 = [] #input a
     u2 = [] #output u
     for ii in shots:
-        data = h5py.File(data_loc + '/'+'rbb'+str(ii)+'.h5', 'r')
+        data = h5py.File(data_loc + '/'+'rba'+str(ii)+'.h5', 'r')
         data_length = int((len(data.keys()) - 3)/2)
         temp_cam_data = []
         for jj in range(data_length):
@@ -347,8 +347,8 @@ def time_windowing(shots):
         for ff in tqdm(range(len(temp_cam_data) - T_in - step)):
             u1.append(temp_cam_data[ff:ff+input_size, :, :])
             u2.append(temp_cam_data[ff+input_size:ff+input_size+step, :, :])
-    u1 = torch.tensor(np.asarray(u1)).permute(0, 2, 3, 1)
-    u2 = torch.tensor(np.asarray(u2)).permute(0, 2, 3, 1)
+    u1 = torch.tensor(np.asarray(u1, dtype=np.int32)).permute(0, 2, 3, 1)
+    u2 = torch.tensor(np.asarray(u2, dtype=np.int32)).permute(0, 2, 3, 1)
     del temp_cam_data, data
     return u1, u2
     
@@ -357,7 +357,7 @@ T_in = input_size = configuration['T_in']
 T = T_out = configuration['T_out']
 step = output_size = configuration['Step']
 
-shots = np.load(data_loc + '/shotnums_rbb_30255_30428.npy')
+shots = np.load(data_loc + '/shotnums_rba_30302_30321.npy')
 # shots = np.sort(shots)
 # %%
 #Extracting hyperparameters from the config dict
@@ -389,10 +389,10 @@ if norm_strategy == 'Min-Max':
 
 # %%
 #50 shots are selected for testing over which we perform time windowing and terate over in 5 groups of 10. 
-#Preparing the Testing data - the last 5 shots from the curated list
+#Preparing the Testing data - the last 3 shots from the curated list
 #Training data is prepared mid training. 
 
-test_shots = shots[-5:]
+test_shots = shots[-3:]
 test_a, test_u = time_windowing(test_shots)
 test_a = normalizer.encode(test_a)
 test_u_encoded = normalizer.encode(test_u)
@@ -419,9 +419,9 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['
 # #Loading from Checkpoint 
 
 # if device == torch.device('cpu'):
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_fundamental-vocoder.pth', map_location=torch.device('cpu')) #First 250. 
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_fundamental-vocoder.pth', map_location=torch.device('cpu')) #First 250. 
 # else:
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_fundamental-vocoder.pth') #First 250. 
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_fundamental-vocoder.pth') #First 250. 
 
 # model.load_state_dict(checkpoint['model_state_dict'])
 # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -441,7 +441,7 @@ epochs = configuration['Epochs']
     # normalizer.cuda()
 
 #Model save location
-model_loc = file_loc + '/Models/FNO_rbb_' + run.name + '.pth'
+model_loc = file_loc + '/Models/FNO_rba_' + run.name + '.pth'
 
 # %% 
 ################################################################
@@ -452,7 +452,7 @@ start_time = time.time()
 for ep in range(epochs+1): #Training Loop - Epochwise
     model.train()
     ntrain=0
-    for ii in range(0, 50, 10): #Training Loop - Batching the DataLoader itself. 
+    for ii in range(0, 45, 15): #Training Loop - Batching the DataLoader itself. 
         train_shots = shots[ii:ii+10]
         train_a, train_u = time_windowing(train_shots)
         train_a = normalizer.encode(train_a)
@@ -631,12 +631,12 @@ ax.axes.xaxis.set_ticks([])
 ax.axes.yaxis.set_ticks([])
 fig.colorbar(pcm, pad=0.05)
 
-output_plot = file_loc + '/Plots/rbb_' + run.name + '.png'
+output_plot = file_loc + '/Plots/rba_' + run.name + '.png'
 plt.savefig(output_plot)
 
 # %% 
 
-CODE = ['FNO_rbb_full_shots.py']
+CODE = ['FNO_rba_full_shots.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
