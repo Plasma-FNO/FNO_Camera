@@ -6,10 +6,10 @@ Created on 6 Jan 2023
 FNO modelled over Camera data = rba camera looking at the divertor
 """
 # %%
-configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
+configuration = {"Case": 'RBA Camera', #Specifying the Camera setup
                  "Pipeline": 'Sequential', #Shot-Agnostic RNN windowed data pipeline. 
                  "Calibration": 'Invariant', #CAD inspired Geometry setup
-                 "Epochs": 250, 
+                 "Epochs": 500, 
                  "Batch Size": 20,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
@@ -23,8 +23,8 @@ configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "T_in": 10, #Input time steps
                  "T_out": 'All', #Max simulation time
                  "Step": 10, #Time steps output in each forward call
-                 "Modes":16, #Number of Fourier Modes
-                 "Width": 32, #Features of the Convolutional Kernel
+                 "Modes":8, #Number of Fourier Modes
+                 "Width": 16, #Features of the Convolutional Kernel
                  "Loss Function": 'LP-Loss', #Choice of Loss Fucnction
                  "Resolution":1
                  }
@@ -416,20 +416,24 @@ optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
 
 
+
+
 # #Loading from Checkpoint 
+# model_name = 'dyadic-parsley' # 250 8x16
+
 
 # if device == torch.device('cpu'):
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_fundamental-vocoder.pth', map_location=torch.device('cpu')) #First 250. 
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_' + model_name + '.pth', map_location=torch.device('cpu')) 
 # else:
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_fundamental-vocoder.pth') #First 250. 
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rba_' + model_name + '.pth')
 
 # model.load_state_dict(checkpoint['model_state_dict'])
 # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 # epoch = checkpoint['epoch']
 # loss = checkpoint['loss']
 
-optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
+# optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
+# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
 
 
 myloss = LpLoss(size_average=False)
@@ -462,6 +466,7 @@ for ep in range(epochs+1): #Training Loop - Epochwise
         t1 = default_timer()
         train_l2= 0
         test_l2 = 0
+        t1_5 = default_timer()
 
         for xx, yy in train_loader: #Training Loop - Batchwise
             optimizer.zero_grad()
@@ -485,6 +490,8 @@ for ep in range(epochs+1): #Training Loop - Epochwise
                 loss = myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1)) 
                 test_l2 += loss
         t2 = default_timer()
+        print("Training Time  per Data Group : " + str(t2 - t1_5))
+        
     scheduler.step()
     train_loss = train_l2 / ntrain
     test_loss = test_l2 / ntest

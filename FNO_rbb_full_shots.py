@@ -294,9 +294,9 @@ class FNO2d(nn.Module):
 #Using x and y values discretised along the view of the camera. 
     def get_grid(self, shape, device):
         batchsize, size_x, size_y = shape[0], shape[1], shape[2]
-        gridx = torch.tensor(np.linspace(-1.5, 1.5, size_x), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(-1.0, 2.0, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-        gridy = torch.tensor(np.linspace(-2.0, 2.0, size_y), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(0.0, 1.0, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         return torch.cat((gridx, gridy), dim=-1).to(device)
 
@@ -417,16 +417,19 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['
 
 
 # #Loading from Checkpoint 
+# model_name = 'fundamental-vocoder' # 250 8x16
+model_name = 'seething-echelon' # 250 16x32
 
-# if device == torch.device('cpu'):
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_fundamental-vocoder.pth', map_location=torch.device('cpu')) #First 250. 
-# else:
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_fundamental-vocoder.pth') #First 250. 
 
-# model.load_state_dict(checkpoint['model_state_dict'])
-# optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-# epoch = checkpoint['epoch']
-# loss = checkpoint['loss']
+if device == torch.device('cpu'):
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth', map_location=torch.device('cpu')) 
+else:
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth')
+
+model.load_state_dict(checkpoint['model_state_dict'])
+optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+epoch = checkpoint['epoch']
+loss = checkpoint['loss']
 
 optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
@@ -462,7 +465,7 @@ for ep in range(epochs+1): #Training Loop - Epochwise
         t1 = default_timer()
         train_l2= 0
         test_l2 = 0
-
+        t1_5 = default_timer()
         for xx, yy in train_loader: #Training Loop - Batchwise
             optimizer.zero_grad()
             xx = xx.to(device)
@@ -485,6 +488,7 @@ for ep in range(epochs+1): #Training Loop - Epochwise
                 loss = myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1)) 
                 test_l2 += loss
         t2 = default_timer()
+        print("Training Time  per Data Group : " + str(t2 - t1_5))
     scheduler.step()
     train_loss = train_l2 / ntrain
     test_loss = test_l2 / ntest
