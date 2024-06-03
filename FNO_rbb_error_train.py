@@ -9,8 +9,8 @@ FNO modelled over Camera data = rbb camera looking at the central solenoid
 configuration = {"Case": 'RBB Camera', #Specifying the Camera setup
                  "Pipeline": 'Sequential', #Shot-Agnostic RNN windowed data pipeline. 
                  "Calibration": 'Invariant', #CAD inspired Geometry setup
-                 "Epochs": 1, 
-                 "Batch Size": 20,
+                 "Epochs": 150, 
+                 "Batch Size": 40,
                  "Optimizer": 'Adam',
                  "Learning Rate": 0.005,
                  "Scheduler Step": 100,
@@ -64,6 +64,7 @@ import os
 path = os.getcwd()
 data_loc = '/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Data/Cam_Data/rbb_30255_30431'
 # model_loc = os.path.dirname(os.path.dirname(os.getcwd()))
+model_loc = '/Users/Vicky/Documents/UKAEA/Code/FNO/Camera_Forecasting_Plots/Models'
 file_loc = os.getcwd()
 
 # %%
@@ -403,43 +404,44 @@ test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a,
 # %%
 #Instantiating the Model. 
 model = FNO2d(modes, modes, width)
-# model = model.double()
-# model = nn.DataParallel(model, device_ids = [0,1])
+model_name = 'symmetric-cliff'#Trained to 100
+
+optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
+
+
+if device == torch.device('cpu'):
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth', map_location=torch.device('cpu')) 
+else:
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth')
+    
 model.to(device)
-
-model_earlier = FNO2d(modes, modes, width)
-model_earlier.load_state_dict(torch.load(file_loc + '/Models/|FNO_rbb_hard-frame.pth', map_location=torch.device('cpu'))) 
-# model_earlier.load_state_dict(torch.load(file_loc + '/Models/FNO_rbb_hard-frame.pth')) 
-model_earlier.to(device)
-
+model.load_state_dict(checkpoint['model_state_dict'])
+optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+epoch = checkpoint['epoch']
+loss = checkpoint['loss']
+model.to(device)
 
 run.update_metadata({'Number of Params': int(model.count_params())})
 print("Number of model params : " + str(model.count_params()))
 
 
-#Setting up the optimisation schedule. 
-optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
-
 # # #Loading from Checkpoint 
 # # model_name = 'fundamental-vocoder' # 250 8x16
 # model_name = 'seething-echelon' # 250 16x32
+model_name = 'hard-frame'
 
-
-# if device == torch.device('cpu'):
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth', map_location=torch.device('cpu')) 
-# else:
-#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth')
-
-# model.load_state_dict(checkpoint['model_state_dict'])
+if device == torch.device('cpu'):
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth', map_location=torch.device('cpu')) 
+else:
+    checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth')
+    
+model_earlier = FNO2d(modes, modes, width)
+model_earlier.load_state_dict(checkpoint['model_state_dict'])
 # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 # epoch = checkpoint['epoch']
 # loss = checkpoint['loss']
-
-# optimizer = torch.optim.Adam(model.parameters(), lr=configuration['Learning Rate'], weight_decay=1e-4)
-# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=configuration['Scheduler Step'], gamma=configuration['Scheduler Gamma'])
-
+model_earlier.to(device)
 
 myloss = LpLoss(size_average=False)
 # myloss = nn.MSELoss()
@@ -477,12 +479,14 @@ for ep in range(epochs+1): #Training Loop - Epochwise
             xx = xx.to(device)
             yy = yy.to(device)
 
-            out_earlier = model_earlier(xx) #Getting the output from the previous model
-            error_earlier = torch.abs(out_earlier - yy) #Getting the error from the previous model. 
+            with torch.no_grad():
+                out_earlier = model_earlier(xx)
+
+            error = torch.abs(out_earlier - yy) #Getting the error from the previous model. 
 
             out = model(xx) #Output of the new model
 
-            loss = myloss(out.reshape(batch_size, -1), error_earlier.reshape(batch_size, -1)) #Loss in matching the error. 
+            loss = myloss(out.reshape(batch_size, -1), error.reshape(batch_size, -1)) #Loss in matching the error. 
             train_l2 += loss
             loss.backward()
             optimizer.step()
@@ -494,12 +498,12 @@ for ep in range(epochs+1): #Training Loop - Epochwise
                 xx = xx.to(device)
                 yy = yy.to(device)
 
-                out_earlier = model_earlier(xx) #Getting the output from the previous model
-                error_earlier = torch.abs(out_earlier - yy) #Getting the error from the previous model. 
+                out_earlier = model_earlier(xx)
+                error = torch.abs(out_earlier - yy) #Getting the error from the previous model. 
 
                 out = model(xx) #Output of the new model
 
-                loss = myloss(out.reshape(batch_size, -1), error_earlier.reshape(batch_size, -1)) #Loss in matching the error.                 loss = myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1)) 
+                loss = myloss(out.reshape(batch_size, -1), error.reshape(batch_size, -1)) #Loss in matching the error.               
                 test_l2 += loss
         t2 = default_timer()
         print("Training Time  per Data Group : " + str(t2 - t1_5))
@@ -532,6 +536,18 @@ train_time = time.time() - start_time
 # torch.save(model.state_dict(),  model_loc)
 
 # %%
+# #Loading the trained model
+# model_name = 'nuclear-joule'
+# if device == torch.device('cpu'):
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth', map_location=torch.device('cpu')) 
+# else:
+#     checkpoint = torch.load('/home/ir-gopa2/rds/rds-ukaea-ap001/ir-gopa2/Code/Fourier_NNs/Camera_Forecasting/Models/FNO_rbb_' + model_name + '.pth')
+    
+# model = FNO2d(modes, modes, width)
+# model.load_state_dict(checkpoint['model_state_dict'])
+# model.to(device)
+
+# %%
 #Testing 
 batch_size = 1 
 test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
@@ -546,10 +562,9 @@ with torch.no_grad():
         xx = xx.to(device)
         yy = yy.to(device)
 
-        pred_earlier = model_earlier(xx)
         pred_error = model(xx)
 
-        test_u_earlier[index] = torch.abs(pred_earlier - yy)
+        test_u_error[index] = torch.abs(model_earlier(xx) - yy)
         pred_set_error[index] = pred_error 
         index += 1
 
@@ -562,7 +577,7 @@ run.update_metadata({'Training Time': float(train_time),
                      'MSE Test Error': float(test_l2)
                     })
 #De-normalising the values
-pred_set = normalizer.decode(pred_set.to(device)).cpu()
+# pred_set = normalizer.decode(pred_set.to(device)).cpu()
 
 # %%
 import matplotlib as mpl
@@ -659,7 +674,7 @@ plt.savefig(output_plot)
 
 # %% 
 
-CODE = ['FNO_rbb_train_error.py']
+CODE = ['FNO_rbb_error_train.py']
 INPUTS = []
 OUTPUTS = [model_loc, output_plot]
 
